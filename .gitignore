@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Project data (per-project documents, vector DBs, logs)
+projects/*/documents/
+projects/*/vectordb/
+projects/*/*.json
+
+# Legacy data (pre-migration)
+documents/
+vectordb/
+*.json
+!requirements.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude
+.claude/
