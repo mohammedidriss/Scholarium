@@ -1,110 +1,239 @@
-# Dual-LLM Research Assistant
+# Scholarium — Multi-Project Research Assistant
 
-A RAG-powered research assistant for Engineering and Technology doctorate research. Uses two LLMs: one to answer questions from your documents, and another to evaluate answer quality.
+A professional, multi-project research platform for Engineering and Technology doctorate research. Built with a dual-LLM architecture: one model answers questions from your documents with citations, another evaluates response quality. All running locally on your machine — no cloud APIs, no data leaves your computer.
 
-## Architecture
+## Features
 
-- **RAG Pipeline**: Loads PDFs, chunks text, embeds with `all-MiniLM-L6-v2`, stores in ChromaDB
-- **Respondent LLM** (`llama3.1` via Ollama): Answers questions with inline citations from your documents
-- **Judge LLM** (`llama3.1:70b` via Ollama, falls back to `gemma2:27b` or `llama3.1`): Scores answers on faithfulness, relevance, hallucination, and completeness
+### Multi-Project Workspace
+- Create multiple isolated research projects (e.g., "Blockchain in Finance", "AI Security")
+- Each project has its own documents, notes, Q&A history, summaries, and vector database
+- Full-screen project selection on startup — complete data segregation between projects
+- Navigate between projects with the "← Projects" button
+
+### RAG-Powered Q&A
+- Upload PDF research papers and ask questions in natural language
+- Retrieves the most relevant passages using semantic search (ChromaDB + sentence-transformers)
+- Generates answers with inline citations pointing to exact source documents and chunks
+- Cancel button to abort long-running queries
+
+### Dual-LLM Evaluation
+- **Respondent LLM** (`llama3.1` via Ollama) — generates answers from your documents
+- **Judge LLM** (`qwen2.5:14b` via Ollama) — scores every answer on 4 dimensions:
+  - Faithfulness (grounded in documents?)
+  - Relevance (answers the question?)
+  - Hallucination (fabricated anything?)
+  - Completeness (missed key points?)
+- Scores displayed as colored bars (green/amber/red)
+
+### Document Management
+- Upload PDFs via drag-and-drop or the Upload button
+- Full-scroll document viewer with page separators
+- Search within documents with highlighted matches
+- Reading status tracking (Unread → Reading → Reviewed)
+- Reading progress bar (auto-tracked by scroll position)
+- Download or delete documents
+- Filter documents by status and collection
+
+### AI Document Analysis
+- **Summarize** — AI-generated summary with key findings and methodology extraction
+- **Literature Matrix** — auto-generate a comparison table across all papers (title, year, methodology, findings, sample size)
+- **Citation Generator** — extract metadata and generate APA, IEEE, or Harvard citations with copy-to-clipboard
+- Summary panel shown side-by-side with the document viewer
+
+### Note-Taking
+- Create, edit, and delete notes per project
+- Bi-directional linking using `[[Note Title]]` syntax — clickable links with backlinks
+- Take notes while viewing documents (linked to the document)
+- Export notes to PDF or DOCX
+
+### PDF Highlighting
+- Select text in the document viewer and click "Highlight" to save
+- Highlights rendered with amber background when document is reopened
+- Highlights panel with delete functionality
+
+### Collections & Organization
+- Group documents into named collections
+- Filter document list by collection or reading status
+
+### Research Journal
+- Daily research journal with auto-populated statistics (Q&A count, documents viewed)
+- Write daily research notes, review past entries
+
+### Conversation History
+- Full Q&A history saved per project
+- Replay past conversations with scores
+- Export answers to PDF or DOCX
+- Copy answers to clipboard
+
+### System Health Dashboard
+- Real-time health monitoring of all services (Python, Flask, Ollama, LLMs, ChromaDB, Embeddings)
+- Click to expand detailed status view
+- Auto-refreshes every 30 seconds
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Backend | Flask (Python) |
+| Frontend | Vanilla HTML/CSS/JS (dark theme) |
+| Vector Database | ChromaDB (persistent, per-project) |
+| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| Respondent LLM | Ollama + `llama3.1` (8B) |
+| Judge LLM | Ollama + `qwen2.5:14b` (14B, with fallback chain) |
+| PDF Processing | PyMuPDF (fitz) |
+| PDF/DOCX Export | fpdf2, python-docx |
 
 ## Setup
 
-### 1. Install Ollama
+### Prerequisites
+- **macOS** (tested on Apple Silicon MacBook Pro, M-series)
+- **Python 3.11+**
+- **Ollama** (local LLM runtime)
+- **8GB+ RAM** (16GB+ recommended for the 14B judge model)
+
+### Step 1: Install Ollama
 
 ```bash
 brew install ollama
 ```
 
-### 2. Pull the models
-
-```bash
-# Required: respondent model
-ollama pull llama3.1
-
-# Recommended: larger judge model (pick one)
-ollama pull llama3.1:70b    # Best quality (requires ~40GB RAM)
-# OR
-ollama pull gemma2:27b      # Good alternative (requires ~18GB RAM)
-# OR just use llama3.1 for both (automatic fallback)
-```
-
-### 3. Start Ollama
+### Step 2: Start Ollama
 
 ```bash
 ollama serve
 ```
 
-### 4. Install Python dependencies
+Keep this running in a separate terminal.
+
+### Step 3: Pull the LLM models
 
 ```bash
-cd research_assistant
+# Required: Respondent model (answers questions)
+ollama pull llama3.1
+
+# Required: Judge model (evaluates answer quality)
+ollama pull qwen2.5:14b
+```
+
+**Judge model fallback chain:** If `qwen2.5:14b` is not available, the system automatically tries `qwen2.5:32b` → `gemma2:27b` → `llama3.1` (in that order). You only need one of these installed.
+
+**Model sizing guide:**
+
+| Model | Size | RAM Needed | Quality | Speed |
+|-------|------|-----------|---------|-------|
+| `llama3.1` | 4.9 GB | ~8 GB | Good (respondent) | Fast |
+| `qwen2.5:14b` | 9.0 GB | ~12 GB | Strong (judge) | Moderate |
+| `qwen2.5:32b` | 19 GB | ~24 GB | Best (judge) | Slow |
+| `gemma2:27b` | 16 GB | ~20 GB | Good (judge) | Moderate |
+
+### Step 4: Clone and install Python dependencies
+
+```bash
+git clone https://github.com/mohammedidriss/Scholarium.git
+cd Scholarium
+
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 5. Run the app
+### Step 5: Run the application
 
 ```bash
 python app.py
 ```
 
-The browser opens automatically at http://localhost:5000.
-
-## Adding Documents
-
-**Option A** — Drag and drop PDFs into the chat input area, or click "Upload PDF" in the top bar.
-
-**Option B** — Copy PDF files into the `documents/` folder, then restart the app (it auto-indexes on startup).
+The browser opens automatically at **http://localhost:8080**.
 
 ## Usage
 
-1. Upload your research papers (PDF)
-2. Ask questions in the chat — the assistant retrieves relevant passages and generates an answer with citations
-3. The right panel shows judge evaluation scores:
-   - **Faithfulness**: Is the answer grounded in the documents?
-   - **Relevance**: Does it address your question?
-   - **No Hallucination**: Did the model avoid fabricating information?
-   - **Completeness**: Were all important points covered?
-4. Click "Sources" under any answer to see the exact document chunks used
+### Getting Started
+1. Launch the app — you'll see the **Project Selection Screen**
+2. Click **"+ New Project"** to create your first research project
+3. Enter a project name and optional description
+4. Click the project card to enter the workspace
 
-## Example Questions
+### Working in a Project
+1. **Upload PDFs** — click "Upload PDF" or drag-and-drop onto the chat input
+2. **Ask questions** — type in the chat and press Send. The assistant retrieves relevant passages and generates an answer with citations
+3. **View documents** — go to the Docs tab, click "View" to open the full-scroll reader
+4. **Summarize** — click "Summarize" on a document to generate an AI summary with key findings
+5. **Take notes** — use the Notes tab or the note bar in the document viewer
+6. **Generate citations** — click "Cite" in the document viewer to get APA/IEEE/Harvard citations
+7. **Literature matrix** — go to the Matrix tab and click "Generate" to compare all papers in a table
+8. **Research journal** — use the Journal tab to log daily research activity
 
-- "What are the main contributions of this paper?"
-- "Compare the methodologies used across these studies."
-- "What limitations do the authors identify in their approach?"
-- "Summarize the experimental results and their statistical significance."
-- "What future research directions are suggested?"
-
-## Session History
-
-All Q&A interactions and scores are logged to `qa_log.json` for later review.
+### Switching Projects
+- Click **"← Projects"** in the top-left corner to return to the project selection screen
+- Each project is completely isolated — documents, notes, history, and all data are separate
 
 ## Project Structure
 
 ```
-research_assistant/
-├── documents/          # Drop PDF papers here
-├── vectordb/           # ChromaDB persistent storage
-├── app.py              # Flask server + routes
-├── rag_pipeline.py     # Document loading + retrieval
-├── respondent.py       # Respondent LLM logic
-├── judge.py            # Judge LLM logic
-├── evaluator.py        # Orchestrates both LLMs
+Scholarium/
+├── app.py                  # Flask server + all API routes (1,482 lines)
+├── rag_pipeline.py         # RAG: PDF loading, chunking, embedding, ChromaDB retrieval
+├── evaluator.py            # Orchestrates respondent + judge LLMs (per-project)
+├── respondent.py           # Respondent LLM logic (llama3.1 via Ollama)
+├── judge.py                # Judge LLM logic (qwen2.5:14b with fallback chain)
+├── requirements.txt        # Python dependencies
 ├── templates/
-│   └── index.html      # Web UI
+│   └── index.html          # Web UI (project screen + workspace)
 ├── static/
-│   └── style.css       # UI styles
-├── requirements.txt    # Python dependencies
-├── qa_log.json         # Auto-generated session log
+│   ├── app.js              # Frontend logic (1,788 lines)
+│   └── style.css           # Dark theme styles (1,970 lines)
+├── projects/               # All project data (auto-created)
+│   ├── projects.json       # Project registry
+│   └── <project-id>/       # Per-project isolated data
+│       ├── documents/      # PDF papers
+│       ├── vectordb/       # ChromaDB vector store
+│       ├── notes.json      # Research notes
+│       ├── qa_log.json     # Q&A conversation history
+│       ├── summaries.json  # AI-generated paper summaries
+│       ├── highlights.json # Document highlights
+│       ├── citations.json  # Extracted citation metadata
+│       ├── journal.json    # Daily research journal
+│       ├── reading_status.json
+│       └── literature_matrix.json
 └── README.md
 ```
+
+## API Endpoints
+
+All data routes are scoped under `/api/projects/<project_id>/`:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/projects` | List all projects |
+| POST | `/api/projects` | Create new project |
+| PUT | `/api/projects/<id>` | Rename/update project |
+| DELETE | `/api/projects/<id>` | Delete project and all data |
+| POST | `/api/projects/<id>/query` | RAG query (ask a question) |
+| GET | `/api/projects/<id>/documents` | List documents |
+| POST | `/api/projects/<id>/upload` | Upload PDF |
+| GET | `/api/projects/<id>/notes` | List notes |
+| GET | `/api/projects/<id>/history` | Q&A history |
+| GET | `/api/projects/<id>/summaries` | Document summaries |
+| POST | `/api/projects/<id>/matrix/generate` | Generate literature matrix |
+| GET | `/api/health` | System health check |
+| POST | `/api/restart` | Restart server |
+
+## Example Research Questions
+
+- "What are the main contributions of this paper?"
+- "Compare the methodologies used across these studies."
+- "What limitations do the authors identify?"
+- "Summarize the experimental results and their significance."
+- "Who are the authors of this document?"
+- "What future research directions are suggested?"
 
 ## Requirements
 
 - Python 3.11+
-- macOS (tested on Apple Silicon)
+- macOS (Apple Silicon recommended)
 - Ollama running locally
-- ~8GB RAM minimum (more for larger judge models)
-# Scholarium
+- 8GB RAM minimum (16GB+ recommended for qwen2.5:14b judge model)
+
+## License
+
+MIT
