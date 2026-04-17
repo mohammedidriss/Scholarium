@@ -220,6 +220,7 @@ function selectProject(id) {
 
     if (project) addSystemMessage(`Project: ${project.name}`);
 
+    switchTab('chat');
     reloadProjectData();
 }
 
@@ -447,8 +448,12 @@ function addAssistantMessage(result) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+// Store the current eval result so we can show details on click
+let currentEvalResult = null;
+
 function updateEvalPanel(result) {
     if (!result.scores) return;
+    currentEvalResult = result;
     if (evalPlaceholder) evalPlaceholder.style.display = 'none';
     if (evalContent) evalContent.style.display = 'block';
 
@@ -472,7 +477,7 @@ function updateEvalPanel(result) {
         const pct = Math.round(score * 100);
         const color = score >= 0.7 ? 'green' : score >= 0.4 ? 'amber' : 'red';
         html += `
-            <div class="eval-dimension">
+            <div class="eval-dimension eval-dimension-clickable" onclick="showEvalDetail('${dim.key}')">
                 <div class="dim-header">
                     <span class="dim-label">${dim.label}</span>
                     <span class="dim-score ${color}">${pct}%</span>
@@ -486,6 +491,52 @@ function updateEvalPanel(result) {
     }
 
     if (evalContent) evalContent.innerHTML = html;
+}
+
+function showEvalDetail(dimKey) {
+    if (!currentEvalResult || !currentEvalResult.scores) return;
+    const data = currentEvalResult.scores[dimKey];
+    if (!data) return;
+
+    const dimMeta = {
+        faithfulness: { label: 'Faithfulness', desc: 'Whether the answer is grounded in the source documents. A high score means every claim can be traced back to the retrieved context.' },
+        relevance: { label: 'Relevance', desc: 'Whether the answer directly addresses the question asked. A high score means the answer stays on topic and covers what was asked.' },
+        hallucination: { label: 'No Hallucination', desc: 'Whether the model avoided fabricating information. A high score (close to 100%) means nothing was invented outside the source documents.' },
+        completeness: { label: 'Completeness', desc: 'Whether all important points from the context are covered. A high score means the answer didn\'t miss critical information.' },
+    }[dimKey] || { label: dimKey, desc: '' };
+
+    const pct = Math.round((data.score || 0) * 100);
+    const color = data.score >= 0.7 ? 'green' : data.score >= 0.4 ? 'amber' : 'red';
+
+    const listView = document.getElementById('evalListView');
+    const detailView = document.getElementById('evalDetailView');
+    const detailContent = document.getElementById('evalDetailContent');
+    if (!detailView || !detailContent) return;
+
+    detailContent.innerHTML = `
+        <div class="eval-detail-score">
+            <div class="eval-detail-label">${escapeHtml(dimMeta.label)}</div>
+            <div class="eval-detail-pct ${color}">${pct}%</div>
+        </div>
+        <div class="score-bar" style="margin-bottom:24px;"><div class="score-fill ${color}" style="width:${pct}%"></div></div>
+        <div class="eval-detail-section">
+            <h3>What this means</h3>
+            <p>${escapeHtml(dimMeta.desc)}</p>
+        </div>
+        <div class="eval-detail-section">
+            <h3>Judge's explanation</h3>
+            <p>${escapeHtml(data.explanation || 'No explanation provided.')}</p>
+        </div>
+        ${currentEvalResult.judge_model ? `<div class="eval-detail-section"><h3>Judge Model</h3><p>${escapeHtml(currentEvalResult.judge_model)}</p></div>` : ''}
+    `;
+
+    listView.style.display = 'none';
+    detailView.style.display = 'flex';
+}
+
+function closeEvalDetail() {
+    document.getElementById('evalListView').style.display = 'flex';
+    document.getElementById('evalDetailView').style.display = 'none';
 }
 
 function formatAnswer(text) {
@@ -576,17 +627,33 @@ async function sendQuestion() {
 // ============================================================
 
 function switchTab(tab) {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    const activeBtn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+    // Update nav buttons
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const activeBtn = document.querySelector(`.nav-btn[data-tab="${tab}"]`);
     if (activeBtn) activeBtn.classList.add('active');
 
-    const tabIds = ['tabEval', 'tabNotes', 'tabHistory', 'tabSummaries', 'tabDocs', 'tabMatrix', 'tabJournal'];
-    const tabKeys = ['eval', 'notes', 'history', 'summaries', 'docs', 'matrix', 'journal'];
+    // Show/hide tab pages
+    const tabIds = ['tabChat', 'tabEval', 'tabNotes', 'tabHistory', 'tabSummaries', 'tabDocs', 'tabMatrix', 'tabJournal'];
+    const tabKeys = ['chat', 'eval', 'notes', 'history', 'summaries', 'docs', 'matrix', 'journal'];
 
     tabIds.forEach((id, i) => {
         const el = document.getElementById(id);
-        if (el) el.style.display = tabKeys[i] === tab ? 'block' : 'none';
+        if (el) el.style.display = tabKeys[i] === tab ? 'flex' : 'none';
     });
+
+    // Reset detail views when entering their tabs
+    if (tab === 'history') {
+        const hlv = document.getElementById('historyListView');
+        const hdv = document.getElementById('historyDetailView');
+        if (hlv) hlv.style.display = 'flex';
+        if (hdv) hdv.style.display = 'none';
+    }
+    if (tab === 'eval') {
+        const elv = document.getElementById('evalListView');
+        const edv = document.getElementById('evalDetailView');
+        if (elv) elv.style.display = 'flex';
+        if (edv) edv.style.display = 'none';
+    }
 
     if (!requireProject()) return;
     if (tab === 'history') loadHistory();
@@ -804,23 +871,60 @@ function renderHistory(history) {
 }
 
 function replayHistory(entry) {
-    const welcome = chatMessages.querySelector('.welcome-message');
-    if (welcome) welcome.remove();
+    // Show detail view inline within History tab
+    const listView = document.getElementById('historyListView');
+    const detailView = document.getElementById('historyDetailView');
+    const detailContent = document.getElementById('historyDetailContent');
+    if (!detailView || !detailContent) return;
 
-    addUserMessage(entry.question);
+    const date = new Date(entry.timestamp).toLocaleString();
+    const modelLine = entry.respondent_model
+        ? `<div class="history-detail-meta">Model: ${escapeHtml(entry.respondent_model)} · Judge: ${escapeHtml(entry.judge_model || 'none')} · ${date}</div>`
+        : '';
 
-    const result = {
-        answer: entry.answer,
-        respondent_model: entry.respondent_model || 'llama3.1',
-        respondent_success: true,
-        chunks: [],
-        scores: entry.scores,
-        judge_model: entry.judge_model || '',
-    };
-    addAssistantMessage(result);
-    if (entry.scores) updateEvalPanel(result);
+    let scoresHtml = '';
+    if (entry.scores) {
+        const dims = [
+            { key: 'faithfulness', label: 'Faithfulness' },
+            { key: 'relevance', label: 'Relevance' },
+            { key: 'hallucination', label: 'No Hallucination' },
+            { key: 'completeness', label: 'Completeness' },
+        ];
+        scoresHtml = '<div class="history-detail-scores">';
+        for (const dim of dims) {
+            const s = entry.scores[dim.key];
+            if (!s) continue;
+            const pct = Math.round((s.score || 0) * 100);
+            const color = s.score >= 0.7 ? 'green' : s.score >= 0.4 ? 'amber' : 'red';
+            scoresHtml += `<div class="eval-dimension">
+                <div class="dim-header"><span class="dim-label">${dim.label}</span><span class="dim-score ${color}">${pct}%</span></div>
+                <div class="score-bar"><div class="score-fill ${color}" style="width:${pct}%"></div></div>
+                <div class="dim-explanation">${escapeHtml(s.explanation || '')}</div>
+            </div>`;
+        }
+        scoresHtml += '</div>';
+    }
 
-    switchTab('eval');
+    detailContent.innerHTML = `
+        <div class="history-detail-section">
+            <h3>Question</h3>
+            <div class="history-detail-question">${escapeHtml(entry.question)}</div>
+        </div>
+        <div class="history-detail-section">
+            <h3>Answer</h3>
+            <div class="history-detail-answer">${formatAnswer(entry.answer)}</div>
+        </div>
+        ${modelLine}
+        ${scoresHtml ? `<div class="history-detail-section"><h3>Evaluation Scores</h3>${scoresHtml}</div>` : ''}
+    `;
+
+    listView.style.display = 'none';
+    detailView.style.display = 'flex';
+}
+
+function closeHistoryDetail() {
+    document.getElementById('historyListView').style.display = 'flex';
+    document.getElementById('historyDetailView').style.display = 'none';
 }
 
 async function clearHistory() {
@@ -945,6 +1049,8 @@ function renderDocList(docs) {
 
 async function openDocViewer(filename) {
     if (!requireProject()) return;
+    // Switch to chat tab (where the viewer lives)
+    switchTab('chat');
     docCurrentFilename = filename;
     docViewerOpen = true;
     document.getElementById('chatView').style.display = 'none';
@@ -1614,8 +1720,8 @@ async function loadTodayJournal() {
         const data = await resp.json();
         currentJournalId = data.id || null;
 
-        if (data.stats) {
-            renderJournalStats(data.stats);
+        if (data.auto_stats) {
+            renderJournalStats(data.auto_stats);
         }
 
         if (contentEl) {
@@ -1627,20 +1733,34 @@ async function loadTodayJournal() {
 }
 
 async function saveJournalEntry() {
-    if (!currentJournalId || !currentProjectId) {
-        addSystemMessage('No journal entry to save.');
+    if (!currentProjectId) {
+        addSystemMessage('No project selected.');
         return;
     }
     const contentEl = document.getElementById('journalContent');
     if (!contentEl) return;
     const content = contentEl.value;
 
+    // If no journal ID yet, load today's (creates one on backend)
+    if (!currentJournalId) {
+        try {
+            const resp = await fetch(projectUrl('/journal/today'));
+            const data = await resp.json();
+            currentJournalId = data.id || null;
+        } catch { /* ignore */ }
+    }
+    if (!currentJournalId) {
+        addSystemMessage('Failed to initialize journal entry.');
+        return;
+    }
+
     try {
-        await fetch(projectUrl(`/journal/${encodeURIComponent(currentJournalId)}`), {
+        const resp = await fetch(projectUrl(`/journal/${encodeURIComponent(currentJournalId)}`), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content }),
         });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         addSystemMessage('Journal entry saved.');
     } catch (err) {
         addSystemMessage('Failed to save journal: ' + err.message);

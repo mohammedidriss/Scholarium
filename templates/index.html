@@ -59,109 +59,116 @@
             No documents loaded in this project. Upload PDFs using the button above.
         </div>
 
-        <!-- Main Layout -->
+        <!-- Main Layout: Left Nav + Full Content -->
         <div class="main-container">
-            <!-- Center Panel: Chat + Document Viewer -->
-            <div class="chat-panel">
-                <!-- Chat View -->
-                <div id="chatView">
-                    <div class="chat-messages" id="chatMessages">
-                        <div class="welcome-message">
-                            <h2>Welcome</h2>
-                            <p>Upload research PDFs and ask questions. The assistant will answer using your documents, and a judge model will evaluate the response quality.</p>
-                        </div>
-                    </div>
-                </div>
+            <!-- Left Navigation -->
+            <nav class="left-nav">
+                <button class="nav-btn active" data-tab="chat" onclick="switchTab('chat')">&#128172; Chat</button>
+                <button class="nav-btn" data-tab="docs" onclick="switchTab('docs')">&#128196; Documents</button>
+                <button class="nav-btn" data-tab="notes" onclick="switchTab('notes')">&#128221; Notes</button>
+                <button class="nav-btn" data-tab="summaries" onclick="switchTab('summaries')">&#128202; Summaries</button>
+                <button class="nav-btn" data-tab="matrix" onclick="switchTab('matrix')">&#128200; Matrix</button>
+                <button class="nav-btn" data-tab="history" onclick="switchTab('history')">&#128337; History</button>
+                <button class="nav-btn" data-tab="eval" onclick="switchTab('eval')">&#9989; Evaluation</button>
+                <button class="nav-btn" data-tab="journal" onclick="switchTab('journal')">&#128214; Journal</button>
+            </nav>
 
-                <!-- Document Viewer -->
-                <div id="docViewerPanel" style="display: none;">
-                    <div class="doc-viewer-bar">
-                        <button class="doc-viewer-close" onclick="closeDocViewer()">&#10005; Close</button>
-                        <span class="doc-viewer-filename" id="docViewerFilename"></span>
-                        <div class="doc-viewer-bar-actions">
-                            <button class="doc-viewer-highlight-btn" onclick="highlightSelectedText()">Highlight</button>
-                            <button class="doc-viewer-cite-btn" onclick="showCitationModal()">Cite</button>
-                            <button class="doc-viewer-summarize-btn" id="docSummarizeBtn" onclick="summarizeCurrentDoc()">Summarize</button>
-                            <div class="doc-viewer-search">
-                                <input type="text" id="docSearchInput" placeholder="Search..." oninput="searchInDoc()">
-                                <span id="docSearchCount"></span>
+            <!-- Full Content Area -->
+            <div class="content-area">
+                <!-- Chat Tab (default) -->
+                <div class="tab-page" id="tabChat">
+                    <div id="chatView">
+                        <div class="chat-messages" id="chatMessages">
+                            <div class="welcome-message">
+                                <h2>Welcome</h2>
+                                <p>Upload research PDFs and ask questions. The assistant will answer using your documents, and a judge model will evaluate the response quality.</p>
                             </div>
                         </div>
                     </div>
-                    <div class="doc-viewer-body">
-                        <div class="doc-viewer-content" id="docViewerContent"></div>
-                        <div class="doc-highlights-panel" id="docHighlightsPanel" style="display: none;">
-                            <div class="doc-summary-header"><strong>Highlights</strong><button class="doc-summary-close" onclick="toggleHighlightsPanel()">&#10005;</button></div>
-                            <div id="docHighlightsList"></div>
+
+                    <!-- Document Viewer -->
+                    <div id="docViewerPanel" style="display: none;">
+                        <div class="doc-viewer-bar">
+                            <button class="doc-viewer-close" onclick="closeDocViewer()">&#10005; Close</button>
+                            <span class="doc-viewer-filename" id="docViewerFilename"></span>
+                            <div class="doc-viewer-bar-actions">
+                                <button class="doc-viewer-highlight-btn" onclick="highlightSelectedText()">Highlight</button>
+                                <button class="doc-viewer-cite-btn" onclick="showCitationModal()">Cite</button>
+                                <button class="doc-viewer-summarize-btn" id="docSummarizeBtn" onclick="summarizeCurrentDoc()">Summarize</button>
+                                <div class="doc-viewer-search">
+                                    <input type="text" id="docSearchInput" placeholder="Search..." oninput="searchInDoc()">
+                                    <span id="docSearchCount"></span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="doc-summary-panel" id="docSummaryPanel" style="display: none;">
-                            <div class="doc-summary-header"><strong>Summary</strong><button class="doc-summary-close" onclick="closeSummaryPanel()">&#10005;</button></div>
-                            <div class="doc-summary-body" id="docSummaryBody"></div>
+                        <div class="doc-viewer-body">
+                            <div class="doc-viewer-content" id="docViewerContent"></div>
+                            <div class="doc-highlights-panel" id="docHighlightsPanel" style="display: none;">
+                                <div class="doc-summary-header"><strong>Highlights</strong><button class="doc-summary-close" onclick="toggleHighlightsPanel()">&#10005;</button></div>
+                                <div id="docHighlightsList"></div>
+                            </div>
+                            <div class="doc-summary-panel" id="docSummaryPanel" style="display: none;">
+                                <div class="doc-summary-header"><strong>Summary</strong><button class="doc-summary-close" onclick="closeSummaryPanel()">&#10005;</button></div>
+                                <div class="doc-summary-body" id="docSummaryBody"></div>
+                            </div>
+                        </div>
+                        <div class="doc-viewer-note-bar">
+                            <textarea id="docViewerNoteInput" placeholder="Take a note..." rows="2"></textarea>
+                            <button class="note-save-btn" onclick="saveDocNote()">Save Note</button>
                         </div>
                     </div>
-                    <div class="doc-viewer-note-bar">
-                        <textarea id="docViewerNoteInput" placeholder="Take a note..." rows="2"></textarea>
-                        <button class="note-save-btn" onclick="saveDocNote()">Save Note</button>
+
+                    <!-- Citation Modal -->
+                    <div class="citation-modal" id="citationModal" style="display: none;">
+                        <div class="citation-modal-content">
+                            <div class="citation-modal-header"><strong>Citation</strong><button class="doc-summary-close" onclick="closeCitationModal()">&#10005;</button></div>
+                            <div class="citation-tabs">
+                                <button class="citation-tab active" onclick="showCitationStyle('apa')">APA</button>
+                                <button class="citation-tab" onclick="showCitationStyle('ieee')">IEEE</button>
+                                <button class="citation-tab" onclick="showCitationStyle('harvard')">Harvard</button>
+                            </div>
+                            <div class="citation-text" id="citationText">Generating citation...</div>
+                            <button class="answer-copy-btn" onclick="copyCitationText()">Copy Citation</button>
+                        </div>
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div class="chat-input-area">
+                        <div class="input-wrapper">
+                            <div class="attached-file" id="attachedFile" style="display: none;">
+                                <span class="attached-name" id="attachedName"></span>
+                                <button class="attached-remove" onclick="removeAttachment()">&times;</button>
+                            </div>
+                            <div class="drop-zone" id="dropZone">
+                                <textarea id="questionInput" placeholder="Ask a research question..." rows="2"></textarea>
+                            </div>
+                        </div>
+                        <div class="input-actions">
+                            <label class="attach-btn" title="Attach PDF">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                                <input type="file" id="chatFileInput" accept=".pdf" hidden>
+                            </label>
+                            <button id="sendBtn">Send</button>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Citation Modal -->
-                <div class="citation-modal" id="citationModal" style="display: none;">
-                    <div class="citation-modal-content">
-                        <div class="citation-modal-header"><strong>Citation</strong><button class="doc-summary-close" onclick="closeCitationModal()">&#10005;</button></div>
-                        <div class="citation-tabs">
-                            <button class="citation-tab active" onclick="showCitationStyle('apa')">APA</button>
-                            <button class="citation-tab" onclick="showCitationStyle('ieee')">IEEE</button>
-                            <button class="citation-tab" onclick="showCitationStyle('harvard')">Harvard</button>
-                        </div>
-                        <div class="citation-text" id="citationText">Generating citation...</div>
-                        <button class="answer-copy-btn" onclick="copyCitationText()">Copy Citation</button>
+                <!-- Documents Tab (full page) -->
+                <div class="tab-page" id="tabDocs" style="display: none;">
+                    <div class="tab-page-header"><h2>Documents</h2></div>
+                    <div class="doc-filter-bar">
+                        <select id="statusFilter" onchange="applyDocFilters()"><option value="all">All Status</option><option value="unread">Unread</option><option value="reading">Reading</option><option value="reviewed">Reviewed</option></select>
+                        <select id="collectionFilter" onchange="applyDocFilters()"><option value="all">All Collections</option></select>
                     </div>
+                    <div class="doc-list" id="docList"><p class="docs-empty">Loading...</p></div>
                 </div>
 
-                <!-- Chat Input -->
-                <div class="chat-input-area">
-                    <div class="input-wrapper">
-                        <div class="attached-file" id="attachedFile" style="display: none;">
-                            <span class="attached-name" id="attachedName"></span>
-                            <button class="attached-remove" onclick="removeAttachment()">&times;</button>
-                        </div>
-                        <div class="drop-zone" id="dropZone">
-                            <textarea id="questionInput" placeholder="Ask a research question..." rows="2"></textarea>
-                        </div>
-                    </div>
-                    <div class="input-actions">
-                        <label class="attach-btn" title="Attach PDF">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-                            <input type="file" id="chatFileInput" accept=".pdf" hidden>
-                        </label>
-                        <button id="sendBtn">Send</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Right Panel: Tabs -->
-            <div class="right-panel">
-                <div class="tab-bar">
-                    <button class="tab-btn active" data-tab="eval" onclick="switchTab('eval')">Eval</button>
-                    <button class="tab-btn" data-tab="notes" onclick="switchTab('notes')">Notes</button>
-                    <button class="tab-btn" data-tab="history" onclick="switchTab('history')">History</button>
-                    <button class="tab-btn" data-tab="summaries" onclick="switchTab('summaries')">Summaries</button>
-                    <button class="tab-btn" data-tab="docs" onclick="switchTab('docs')">Docs</button>
-                    <button class="tab-btn" data-tab="matrix" onclick="switchTab('matrix')">Matrix</button>
-                    <button class="tab-btn" data-tab="journal" onclick="switchTab('journal')">Journal</button>
-                </div>
-
-                <div class="tab-content" id="tabEval">
-                    <p class="eval-placeholder" id="evalPlaceholder">Scores will appear here after each response.</p>
-                    <div class="eval-content" id="evalContent" style="display: none;"></div>
-                </div>
-
-                <div class="tab-content" id="tabNotes" style="display: none;">
-                    <button class="new-note-btn" onclick="createNote()">+ New Note</button>
+                <!-- Notes Tab (full page) -->
+                <div class="tab-page" id="tabNotes" style="display: none;">
+                    <div class="tab-page-header"><h2>Notes</h2><button class="new-note-btn" onclick="createNote()">+ New Note</button></div>
                     <div class="note-editor" id="noteEditor" style="display: none;">
                         <input type="text" class="note-title-input" id="noteTitleInput" placeholder="Note title...">
-                        <textarea class="note-content-input" id="noteContentInput" placeholder="Write your note... Use [[Note Title]] to link." rows="10"></textarea>
+                        <textarea class="note-content-input" id="noteContentInput" placeholder="Write your note... Use [[Note Title]] to link." rows="16"></textarea>
                         <div class="note-editor-actions">
                             <button class="note-save-btn" onclick="saveCurrentNote()">Save</button>
                             <button class="note-delete-btn" onclick="deleteCurrentNote()">Delete</button>
@@ -176,33 +183,60 @@
                     <div class="notes-list" id="notesList"></div>
                 </div>
 
-                <div class="tab-content" id="tabHistory" style="display: none;">
-                    <div class="history-list" id="historyList"><p class="history-empty">No conversation history yet.</p></div>
-                    <button class="clear-history-btn" id="clearHistoryBtn" onclick="clearHistory()" style="display: none;">Clear History</button>
-                </div>
-
-                <div class="tab-content" id="tabSummaries" style="display: none;">
+                <!-- Summaries Tab (full page) -->
+                <div class="tab-page" id="tabSummaries" style="display: none;">
+                    <div class="tab-page-header"><h2>Summaries</h2></div>
                     <div id="summariesList"><p class="docs-empty">Loading...</p></div>
                 </div>
 
-                <div class="tab-content" id="tabDocs" style="display: none;">
-                    <div class="doc-filter-bar">
-                        <select id="statusFilter" onchange="applyDocFilters()"><option value="all">All Status</option><option value="unread">Unread</option><option value="reading">Reading</option><option value="reviewed">Reviewed</option></select>
-                        <select id="collectionFilter" onchange="applyDocFilters()"><option value="all">All Collections</option></select>
-                    </div>
-                    <div class="doc-list" id="docList"><p class="docs-empty">Loading...</p></div>
-                </div>
-
-                <div class="tab-content" id="tabMatrix" style="display: none;">
-                    <button class="new-note-btn" onclick="generateMatrix()">Generate Literature Matrix</button>
+                <!-- Matrix Tab (full page) -->
+                <div class="tab-page" id="tabMatrix" style="display: none;">
+                    <div class="tab-page-header"><h2>Literature Matrix</h2><button class="new-note-btn" onclick="generateMatrix()">Generate Matrix</button></div>
                     <div class="matrix-container" id="matrixContainer"><p class="docs-empty">Click "Generate" to create a comparison matrix.</p></div>
                 </div>
 
-                <div class="tab-content" id="tabJournal" style="display: none;">
+                <!-- History Tab (full page) -->
+                <div class="tab-page" id="tabHistory" style="display: none;">
+                    <!-- List View -->
+                    <div id="historyListView">
+                        <div class="tab-page-header"><h2>Q&amp;A History</h2></div>
+                        <div class="history-list" id="historyList"><p class="history-empty">No conversation history yet.</p></div>
+                        <button class="clear-history-btn" id="clearHistoryBtn" onclick="clearHistory()" style="display: none;">Clear History</button>
+                    </div>
+                    <!-- Detail View -->
+                    <div id="historyDetailView" style="display: none;">
+                        <div class="tab-page-header">
+                            <h2>History Detail</h2>
+                            <button class="note-back-btn" onclick="closeHistoryDetail()">&#10005; Close</button>
+                        </div>
+                        <div id="historyDetailContent"></div>
+                    </div>
+                </div>
+
+                <!-- Evaluation Tab (full page) -->
+                <div class="tab-page" id="tabEval" style="display: none;">
+                    <!-- List View -->
+                    <div id="evalListView">
+                        <div class="tab-page-header"><h2>Evaluation Scores</h2></div>
+                        <p class="eval-placeholder" id="evalPlaceholder">Scores will appear here after each response. Click a score below to see details.</p>
+                        <div class="eval-content" id="evalContent" style="display: none;"></div>
+                    </div>
+                    <!-- Detail View -->
+                    <div id="evalDetailView" style="display: none;">
+                        <div class="tab-page-header">
+                            <h2>Evaluation Detail</h2>
+                            <button class="note-back-btn" onclick="closeEvalDetail()">&#10005; Close</button>
+                        </div>
+                        <div id="evalDetailContent"></div>
+                    </div>
+                </div>
+
+                <!-- Journal Tab (full page) -->
+                <div class="tab-page" id="tabJournal" style="display: none;">
+                    <div class="tab-page-header"><h2>Research Journal</h2></div>
                     <div class="journal-today">
-                        <div class="journal-date-nav"><strong>Today's Research Journal</strong></div>
                         <div class="journal-stats" id="journalStats"></div>
-                        <textarea class="journal-textarea" id="journalContent" placeholder="What did you work on today?" rows="6" onblur="saveJournalEntry()"></textarea>
+                        <textarea class="journal-textarea" id="journalContent" placeholder="What did you work on today?" rows="10" onblur="saveJournalEntry()"></textarea>
                         <button class="note-save-btn" onclick="saveJournalEntry()">Save</button>
                     </div>
                     <div class="journal-past" id="journalPast"></div>
