@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Research Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
+    <!-- Quill rich-text editor -->
+    <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+    <script src="https://cdn.quilljs.com/1.3.6/quill.min.js"></script>
 </head>
 <body>
     <!-- ====== PROJECT SELECTION SCREEN (shown when no project is active) ====== -->
@@ -71,6 +74,7 @@
                 <button class="nav-btn" data-tab="history" onclick="switchTab('history')">&#128337; History</button>
                 <button class="nav-btn" data-tab="eval" onclick="switchTab('eval')">&#9989; Evaluation</button>
                 <button class="nav-btn" data-tab="journal" onclick="switchTab('journal')">&#128214; Journal</button>
+                <button class="nav-btn" data-tab="manuscript" onclick="switchTab('manuscript')">&#9997; Manuscript</button>
             </nav>
 
             <!-- Full Content Area -->
@@ -277,6 +281,88 @@
                         <button class="note-save-btn" onclick="saveJournalEntry()">Save</button>
                     </div>
                     <div class="journal-past" id="journalPast"></div>
+                </div>
+
+                <!-- Manuscript Tab (full page) -->
+                <div class="tab-page" id="tabManuscript" style="display: none;">
+                    <!-- List View -->
+                    <div id="manuscriptListView">
+                        <div class="tab-page-header">
+                            <h2>Manuscripts</h2>
+                            <div class="tab-page-actions">
+                                <span class="writing-streak-badge" id="writingStreakBadge" title="Writing streak">&#128293; 0 day streak</span>
+                                <button class="new-note-btn" onclick="createManuscript()">+ New Manuscript</button>
+                            </div>
+                        </div>
+                        <div class="manuscript-list" id="manuscriptList"><p class="docs-empty">Loading...</p></div>
+                    </div>
+
+                    <!-- Editor View -->
+                    <div id="manuscriptEditorView" style="display: none;">
+                        <div class="manuscript-editor-header">
+                            <button class="note-back-btn" onclick="closeManuscriptEditor()">&#8592; All Manuscripts</button>
+                            <h2 id="manuscriptTitle" class="manuscript-title-display">Manuscript</h2>
+                            <div class="manuscript-header-actions">
+                                <select id="manuscriptCitationStyle" onchange="saveManuscriptMeta()">
+                                    <option value="apa">APA</option>
+                                    <option value="ieee">IEEE</option>
+                                    <option value="harvard">Harvard</option>
+                                    <option value="mla">MLA</option>
+                                    <option value="chicago">Chicago</option>
+                                    <option value="vancouver">Vancouver</option>
+                                </select>
+                                <button class="doc-action-btn" onclick="exportManuscript('pdf')">Export PDF</button>
+                                <button class="doc-action-btn" onclick="exportManuscript('docx')">Export DOCX</button>
+                                <button class="doc-action-btn" onclick="showVersionHistory()">History</button>
+                                <button class="doc-action-btn doc-delete-btn" onclick="deleteCurrentManuscript()">Delete</button>
+                            </div>
+                        </div>
+                        <div class="manuscript-editor-body">
+                            <!-- Chapter sidebar -->
+                            <aside class="chapter-sidebar">
+                                <div class="chapter-sidebar-header">
+                                    <strong>Chapters</strong>
+                                    <button class="sidebar-new-btn" onclick="addChapter()" style="padding:4px 10px;font-size:11px;">+ Add</button>
+                                </div>
+                                <div class="chapter-list" id="chapterList"><p class="docs-empty" style="font-size:11px;padding:16px;">No chapters yet.</p></div>
+                            </aside>
+                            <!-- Editor -->
+                            <div class="quill-container">
+                                <div id="chapterTitleBar" class="chapter-title-bar" style="display:none;">
+                                    <input type="text" id="chapterTitleInput" placeholder="Chapter title" onblur="renameCurrentChapter()">
+                                </div>
+                                <div id="quillToolbar"></div>
+                                <div id="quillEditor"></div>
+                                <div class="manuscript-editor-footer">
+                                    <span id="manuscriptWordCount">0 words</span>
+                                    <span id="saveStatus" class="save-status"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Citation Picker Modal -->
+                    <div class="citation-modal" id="citationPickerModal" style="display: none;">
+                        <div class="citation-modal-content">
+                            <div class="citation-modal-header">
+                                <strong>Insert Citation</strong>
+                                <button class="doc-summary-close" onclick="closeCitationPicker()">&#10005;</button>
+                            </div>
+                            <input type="text" id="citationPickerInput" placeholder="Search citations..." oninput="filterCitationPicker()" style="width:100%;padding:8px 12px;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);font-family:inherit;font-size:12px;margin-bottom:10px;">
+                            <div id="citationPickerList" class="citation-picker-list"><p class="docs-empty">Loading citations...</p></div>
+                        </div>
+                    </div>
+
+                    <!-- Version History Modal -->
+                    <div class="citation-modal" id="versionHistoryModal" style="display: none;">
+                        <div class="citation-modal-content" style="max-width:600px;">
+                            <div class="citation-modal-header">
+                                <strong>Version History</strong>
+                                <button class="doc-summary-close" onclick="closeVersionHistory()">&#10005;</button>
+                            </div>
+                            <div id="versionHistoryList"><p class="docs-empty">No versions yet.</p></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

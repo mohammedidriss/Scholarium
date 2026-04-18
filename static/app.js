@@ -633,8 +633,8 @@ function switchTab(tab) {
     if (activeBtn) activeBtn.classList.add('active');
 
     // Show/hide tab pages
-    const tabIds = ['tabChat', 'tabEval', 'tabNotes', 'tabHistory', 'tabSummaries', 'tabDocs', 'tabMatrix', 'tabJournal'];
-    const tabKeys = ['chat', 'eval', 'notes', 'history', 'summaries', 'docs', 'matrix', 'journal'];
+    const tabIds = ['tabChat', 'tabEval', 'tabNotes', 'tabHistory', 'tabSummaries', 'tabDocs', 'tabMatrix', 'tabJournal', 'tabManuscript'];
+    const tabKeys = ['chat', 'eval', 'notes', 'history', 'summaries', 'docs', 'matrix', 'journal', 'manuscript'];
 
     tabIds.forEach((id, i) => {
         const el = document.getElementById(id);
@@ -661,6 +661,7 @@ function switchTab(tab) {
     if (tab === 'summaries') loadSummaries();
     if (tab === 'matrix') loadMatrix();
     if (tab === 'journal') { loadTodayJournal(); loadJournalHistory(); }
+    if (tab === 'manuscript') { loadManuscripts(); loadWritingStreak(); }
 }
 
 // ============================================================
@@ -1899,6 +1900,555 @@ async function restartApp() {
     } catch {
         addSystemMessage('Failed to restart.');
     }
+}
+
+// ============================================================
+// Manuscripts (Batch B)
+// ============================================================
+
+let allManuscripts = [];
+let currentManuscriptId = null;
+let currentChapterId = null;
+let quillEditor = null;
+let writingStreakData = { streak: 0, today_words: 0 };
+let _quillSaveTimer = null;
+let _allCitationsCache = [];
+
+async function loadManuscripts() {
+    if (!requireProject()) return;
+    try {
+        const resp = await fetch(projectUrl('/manuscripts'));
+        if (!resp.ok) throw new Error('Failed to load manuscripts');
+        allManuscripts = await resp.json();
+        renderManuscriptList();
+    } catch (err) {
+        addSystemMessage('Failed to load manuscripts.');
+    }
+}
+
+function renderManuscriptList() {
+    const container = document.getElementById('manuscriptList');
+    if (!container) return;
+    if (!allManuscripts || allManuscripts.length === 0) {
+        container.innerHTML = '<div class="empty-state">No manuscripts yet.</div>';
+        return;
+    }
+    const cards = allManuscripts.map(m => {
+        // Backend returns chapter_count + total_words on list; fall back to computing from chapters
+        const chapters = m.chapters || [];
+        const chapterCount = (typeof m.chapter_count === 'number') ? m.chapter_count : chapters.length;
+        const totalWords = (typeof m.total_words === 'number')
+            ? m.total_words
+            : chapters.reduce((sum, c) => sum + (c.word_count || computeWordCount(c.content || '')), 0);
+        const updated = m.updated_at ? new Date(m.updated_at).toLocaleString() : '—';
+        return `
+            <div class="manuscript-card" data-mid="${escapeHtml(m.id)}" onclick="openManuscript('${escapeHtml(m.id)}')">
+                <div class="manuscript-card-title">${escapeHtml(m.title || 'Untitled')}</div>
+                <div class="manuscript-card-meta">
+                    <span>${chapterCount} chapter${chapterCount === 1 ? '' : 's'} · ${totalWords.toLocaleString()} words</span>
+                    <span>${escapeHtml(updated)}</span>
+                </div>
+                <div class="manuscript-card-actions" onclick="event.stopPropagation()">
+                    <button class="doc-action-btn" onclick="openManuscript('${escapeHtml(m.id)}')">Open</button>
+                    <button class="doc-action-btn doc-delete-btn" onclick="deleteManuscript('${escapeHtml(m.id)}')">Delete</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+    container.innerHTML = cards;
+}
+
+async function createManuscript() {
+    if (!requireProject()) return;
+    const title = window.prompt('Manuscript title:');
+    if (!title || !title.trim()) return;
+    try {
+        const resp = await fetch(projectUrl('/manuscripts'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: title.trim() })
+        });
+        if (!resp.ok) throw new Error('create failed');
+        const created = await resp.json();
+        await loadManuscripts();
+        const newId = created.id || (created.manuscript && created.manuscript.id);
+        if (newId) openManuscript(newId);
+    } catch (err) {
+        addSystemMessage('Failed to create manuscript.');
+    }
+}
+
+async function deleteManuscript(mid) {
+    if (!confirm('Delete this manuscript and all its chapters?')) return;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${mid}`), { method: 'DELETE' });
+        if (!resp.ok) throw new Error('delete failed');
+        await loadManuscripts();
+    } catch (err) {
+        addSystemMessage('Failed to delete manuscript.');
+    }
+}
+
+async function loadWritingStreak() {
+    if (!currentProjectId) return;
+    try {
+        const resp = await fetch(projectUrl('/writing-streak'));
+        if (!resp.ok) return;
+        writingStreakData = await resp.json();
+        const badge = document.getElementById('writingStreakBadge');
+        if (badge) {
+            const streak = writingStreakData.streak || 0;
+            const todayWords = writingStreakData.today_words || 0;
+            badge.innerHTML = `🔥 ${streak} day streak · ${todayWords.toLocaleString()} words today`;
+        }
+    } catch { /* ignore */ }
+}
+
+async function openManuscript(mid) {
+    if (!requireProject()) return;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${mid}`));
+        if (!resp.ok) throw new Error('Failed to load manuscript');
+        const manuscript = await resp.json();
+        currentManuscriptId = manuscript.id || mid;
+        // stash full object locally so chapter ops can update it
+        const idx = allManuscripts.findIndex(m => m.id === currentManuscriptId);
+        if (idx >= 0) allManuscripts[idx] = manuscript;
+        else allManuscripts.push(manuscript);
+
+        const listView = document.getElementById('manuscriptListView');
+        const editorView = document.getElementById('manuscriptEditorView');
+        if (listView) listView.style.display = 'none';
+        if (editorView) editorView.style.display = 'flex';
+
+        const titleEl = document.getElementById('manuscriptTitle');
+        if (titleEl) titleEl.textContent = manuscript.title || 'Untitled';
+
+        if (!quillEditor) initQuillEditor();
+
+        renderChapterList();
+
+        const chapters = manuscript.chapters || [];
+        if (chapters.length > 0) {
+            openChapter(chapters[0].id);
+        } else {
+            currentChapterId = null;
+            if (quillEditor) quillEditor.setContents([]);
+            const wc = document.getElementById('manuscriptWordCount');
+            if (wc) wc.textContent = 'No chapters — click + Add Chapter';
+        }
+    } catch (err) {
+        addSystemMessage('Failed to open manuscript.');
+    }
+}
+
+function closeManuscriptEditor() {
+    const listView = document.getElementById('manuscriptListView');
+    const editorView = document.getElementById('manuscriptEditorView');
+    if (editorView) editorView.style.display = 'none';
+    if (listView) listView.style.display = 'flex';
+    currentManuscriptId = null;
+    currentChapterId = null;
+    loadManuscripts();
+}
+
+function _currentManuscript() {
+    return allManuscripts.find(m => m.id === currentManuscriptId);
+}
+
+function renderChapterList() {
+    const container = document.getElementById('chapterList');
+    if (!container) return;
+    const m = _currentManuscript();
+    if (!m) { container.innerHTML = ''; return; }
+    const chapters = m.chapters || [];
+    if (chapters.length === 0) {
+        container.innerHTML = '<div class="empty-state">No chapters yet.</div>';
+        return;
+    }
+    container.innerHTML = chapters.map(c => {
+        const active = c.id === currentChapterId ? 'active' : '';
+        return `
+            <div class="chapter-item ${active}" data-cid="${escapeHtml(c.id)}">
+                <span class="chapter-title" onclick="openChapter('${escapeHtml(c.id)}')">${escapeHtml(c.title || 'Untitled')}</span>
+                <button onclick="renameChapter('${escapeHtml(c.id)}')" title="Rename">✎</button>
+                <button onclick="showVersionHistory('${escapeHtml(c.id)}')" title="History">⟲</button>
+                <button onclick="deleteChapter('${escapeHtml(c.id)}')" title="Delete" class="danger">✕</button>
+            </div>
+        `;
+    }).join('');
+}
+
+async function addChapter() {
+    if (!currentManuscriptId) return;
+    const title = window.prompt('Chapter title:');
+    if (!title || !title.trim()) return;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: title.trim() })
+        });
+        if (!resp.ok) throw new Error('add chapter failed');
+        const created = await resp.json();
+        const newChapter = created.chapter || created;
+        const m = _currentManuscript();
+        if (m) {
+            m.chapters = m.chapters || [];
+            m.chapters.push(newChapter);
+        }
+        renderChapterList();
+        if (newChapter && newChapter.id) openChapter(newChapter.id);
+    } catch (err) {
+        addSystemMessage('Failed to add chapter.');
+    }
+}
+
+async function openChapter(cid) {
+    if (!currentManuscriptId) return;
+    try {
+        // Save current chapter first if switching
+        if (currentChapterId && currentChapterId !== cid && quillEditor) {
+            await saveCurrentChapter();
+        }
+        const m = _currentManuscript();
+        let chapter = m && m.chapters ? m.chapters.find(c => c.id === cid) : null;
+        if (!chapter) {
+            // fetch from backend as fallback
+            const resp = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters/${cid}`));
+            if (resp.ok) chapter = await resp.json();
+        }
+        if (!chapter) return;
+        currentChapterId = cid;
+        if (quillEditor) {
+            quillEditor.root.innerHTML = chapter.content || '';
+        }
+        const wc = document.getElementById('manuscriptWordCount');
+        if (wc) wc.textContent = `${computeWordCount(chapter.content || '')} words`;
+        renderChapterList();
+    } catch (err) {
+        addSystemMessage('Failed to open chapter.');
+    }
+}
+
+async function deleteChapter(cid) {
+    if (!currentManuscriptId) return;
+    if (!confirm('Delete this chapter?')) return;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters/${cid}`), { method: 'DELETE' });
+        if (!resp.ok) throw new Error('delete failed');
+        const m = _currentManuscript();
+        if (m && m.chapters) {
+            m.chapters = m.chapters.filter(c => c.id !== cid);
+        }
+        if (currentChapterId === cid) {
+            currentChapterId = null;
+            if (quillEditor) quillEditor.setContents([]);
+        }
+        renderChapterList();
+    } catch (err) {
+        addSystemMessage('Failed to delete chapter.');
+    }
+}
+
+async function renameChapter(cid) {
+    if (!currentManuscriptId) return;
+    const m = _currentManuscript();
+    const existing = m && m.chapters ? m.chapters.find(c => c.id === cid) : null;
+    const newTitle = window.prompt('New chapter title:', existing ? existing.title : '');
+    if (!newTitle || !newTitle.trim()) return;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters/${cid}`), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle.trim() })
+        });
+        if (!resp.ok) throw new Error('rename failed');
+        if (existing) existing.title = newTitle.trim();
+        renderChapterList();
+    } catch (err) {
+        addSystemMessage('Failed to rename chapter.');
+    }
+}
+
+function initQuillEditor() {
+    if (typeof Quill === 'undefined') {
+        addSystemMessage('Quill editor not loaded.');
+        return;
+    }
+    const editorEl = document.getElementById('quillEditor');
+    const toolbarEl = document.getElementById('quillToolbar');
+    if (!editorEl) return;
+
+    quillEditor = new Quill('#quillEditor', {
+        theme: 'snow',
+        modules: {
+            toolbar: {
+                container: toolbarEl || [
+                    [{ 'header': [1, 2, 3, false] }],
+                    ['bold', 'italic', 'underline', 'blockquote'],
+                    [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                    ['link']
+                ]
+            }
+        }
+    });
+
+    // Add custom Cite button if toolbar exists and doesn't already have one
+    if (toolbarEl && !toolbarEl.querySelector('.ql-cite-custom')) {
+        const citeBtn = document.createElement('button');
+        citeBtn.type = 'button';
+        citeBtn.className = 'ql-cite-custom';
+        citeBtn.textContent = 'Cite';
+        citeBtn.onclick = (e) => { e.preventDefault(); showCitationPicker(); };
+        toolbarEl.appendChild(citeBtn);
+    }
+
+    quillEditor.on('text-change', () => {
+        const html = quillEditor.root.innerHTML;
+        const wc = document.getElementById('manuscriptWordCount');
+        if (wc) wc.textContent = `${computeWordCount(html)} words`;
+        if (_quillSaveTimer) clearTimeout(_quillSaveTimer);
+        _quillSaveTimer = setTimeout(() => {
+            saveCurrentChapter();
+        }, 2000);
+    });
+}
+
+async function saveCurrentChapter() {
+    if (!currentManuscriptId || !currentChapterId || !quillEditor) return;
+    const content = quillEditor.root.innerHTML;
+    try {
+        const resp = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters/${currentChapterId}`), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content })
+        });
+        if (!resp.ok) throw new Error('save failed');
+        const m = _currentManuscript();
+        if (m && m.chapters) {
+            const ch = m.chapters.find(c => c.id === currentChapterId);
+            if (ch) {
+                ch.content = content;
+                ch.word_count = computeWordCount(content);
+            }
+        }
+        loadWritingStreak();
+    } catch (err) {
+        // soft fail — don't spam
+    }
+}
+
+function computeWordCount(html) {
+    if (!html) return 0;
+    const text = String(html).replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&[a-z]+;/gi, ' ');
+    const tokens = text.split(/\s+/).filter(t => t.length > 0);
+    return tokens.length;
+}
+
+async function showCitationPicker() {
+    const modal = document.getElementById('citationPickerModal');
+    const input = document.getElementById('citationPickerInput');
+    const list = document.getElementById('citationPickerList');
+    if (!modal || !list) return;
+
+    modal.style.display = 'flex';
+    list.innerHTML = '<div class="empty-state">Loading…</div>';
+
+    // Try to load from a dedicated citations list endpoint; fall back to allDocs.
+    let citations = [];
+    try {
+        const resp = await fetch(projectUrl('/citations'));
+        if (resp.ok) {
+            const data = await resp.json();
+            citations = Array.isArray(data) ? data : (data.citations || []);
+        }
+    } catch { /* fall through */ }
+
+    if (!citations.length && typeof allDocs !== 'undefined' && Array.isArray(allDocs)) {
+        citations = allDocs
+            .filter(d => d && (d.citation_key || d.bibtex || d.doi))
+            .map(d => ({
+                key: d.citation_key || d.id || d.filename,
+                title: d.title || d.filename || d.name,
+                authors: d.authors || [],
+                year: d.year || (d.date ? String(d.date).slice(0, 4) : '')
+            }));
+    }
+
+    _allCitationsCache = citations;
+    _renderCitationPickerList(citations);
+
+    if (input) {
+        input.value = '';
+        input.oninput = () => {
+            const q = input.value.toLowerCase().trim();
+            if (!q) { _renderCitationPickerList(_allCitationsCache); return; }
+            const filtered = _allCitationsCache.filter(c => {
+                const hay = `${c.key || ''} ${c.title || ''} ${(c.authors || []).join(' ')} ${c.year || ''}`.toLowerCase();
+                return hay.includes(q);
+            });
+            _renderCitationPickerList(filtered);
+        };
+        input.focus();
+    }
+}
+
+function _renderCitationPickerList(items) {
+    const list = document.getElementById('citationPickerList');
+    if (!list) return;
+    if (!items || items.length === 0) {
+        list.innerHTML = '<div class="empty-state">No citations found.</div>';
+        return;
+    }
+    list.innerHTML = items.map(c => {
+        const key = c.key || '';
+        const authors = (c.authors || []).join(', ');
+        const year = c.year || '';
+        return `
+            <div class="citation-picker-item">
+                <div class="citation-info">
+                    <div class="citation-title">${escapeHtml(c.title || key)}</div>
+                    <div class="citation-meta">${escapeHtml(authors)} ${escapeHtml(year ? '(' + year + ')' : '')} · <code>${escapeHtml(key)}</code></div>
+                </div>
+                <button onclick="insertCitation('${escapeHtml(key)}')">Insert</button>
+            </div>
+        `;
+    }).join('');
+}
+
+function closeCitationPicker() {
+    const modal = document.getElementById('citationPickerModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function _shortCiteFromEntry(entry) {
+    if (!entry) return '';
+    let lastName = '';
+    const authors = entry.authors || [];
+    if (authors.length > 0) {
+        const first = String(authors[0] || '');
+        // handle "Last, First" and "First Last"
+        if (first.includes(',')) lastName = first.split(',')[0].trim();
+        else {
+            const parts = first.trim().split(/\s+/);
+            lastName = parts[parts.length - 1] || first;
+        }
+    }
+    const year = entry.year || '';
+    if (lastName && year) return `(${lastName}, ${year})`;
+    if (lastName) return `(${lastName})`;
+    if (year) return `(${year})`;
+    return `(${entry.key || 'cite'})`;
+}
+
+async function insertCitation(key) {
+    if (!quillEditor) return;
+    const entry = _allCitationsCache.find(c => c.key === key);
+    const shortCite = _shortCiteFromEntry(entry || { key });
+
+    const range = quillEditor.getSelection(true);
+    const insertAt = range ? range.index : quillEditor.getLength();
+    quillEditor.insertText(insertAt, shortCite, 'user');
+    quillEditor.setSelection(insertAt + shortCite.length, 0);
+
+    // Track citation_used on the manuscript
+    const m = _currentManuscript();
+    if (m && currentManuscriptId) {
+        m.citations_used = m.citations_used || [];
+        if (!m.citations_used.includes(key)) {
+            m.citations_used.push(key);
+            try {
+                await fetch(projectUrl(`/manuscripts/${currentManuscriptId}`), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ citations_used: m.citations_used })
+                });
+            } catch { /* ignore */ }
+        }
+    }
+    closeCitationPicker();
+}
+
+async function showVersionHistory(cid) {
+    const modal = document.getElementById('versionHistoryModal');
+    const list = document.getElementById('versionHistoryList');
+    if (!modal || !list) return;
+    modal.style.display = 'flex';
+    modal.dataset.cid = cid;
+    list.innerHTML = '<div class="empty-state">Loading…</div>';
+    try {
+        const resp = await fetch(projectUrl(`/versions/${cid}`));
+        if (!resp.ok) throw new Error('failed');
+        const data = await resp.json();
+        const versions = Array.isArray(data) ? data : (data.versions || []);
+        if (versions.length === 0) {
+            list.innerHTML = '<div class="empty-state">No previous versions.</div>';
+            return;
+        }
+        list.innerHTML = versions.map((v, idx) => {
+            const ts = v.timestamp || v.created_at || v.saved_at || '';
+            const tsStr = ts ? new Date(ts).toLocaleString() : '—';
+            const wc = v.word_count != null ? v.word_count : computeWordCount(v.content || '');
+            const safeContent = escapeHtml(String(v.content || '').replace(/<[^>]*>/g, ' ')).slice(0, 400);
+            return `
+                <div class="version-row">
+                    <div class="version-meta">
+                        <strong>${escapeHtml(tsStr)}</strong>
+                        <span>${wc} words</span>
+                    </div>
+                    <div class="version-actions">
+                        <button onclick="document.getElementById('versionPreview_${idx}').style.display='block'">Preview</button>
+                        <button onclick="restoreVersion('${escapeHtml(cid)}', ${idx})">Restore</button>
+                    </div>
+                    <div id="versionPreview_${idx}" class="version-preview" style="display:none">${safeContent}</div>
+                </div>
+            `;
+        }).join('');
+    } catch (err) {
+        list.innerHTML = '<div class="empty-state">Failed to load versions.</div>';
+    }
+}
+
+function closeVersionHistory() {
+    const modal = document.getElementById('versionHistoryModal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function restoreVersion(cid, idx) {
+    if (!confirm('Restore this version? Current content will be saved as a new version.')) return;
+    try {
+        const resp = await fetch(projectUrl(`/chapters/${cid}/restore`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version_index: idx })
+        });
+        if (!resp.ok) throw new Error('restore failed');
+        closeVersionHistory();
+        if (cid === currentChapterId) {
+            // reload chapter content
+            const r2 = await fetch(projectUrl(`/manuscripts/${currentManuscriptId}/chapters/${cid}`));
+            if (r2.ok) {
+                const ch = await r2.json();
+                const m = _currentManuscript();
+                if (m && m.chapters) {
+                    const local = m.chapters.find(c => c.id === cid);
+                    if (local) { local.content = ch.content; local.word_count = ch.word_count; }
+                }
+                if (quillEditor) quillEditor.root.innerHTML = ch.content || '';
+                const wc = document.getElementById('manuscriptWordCount');
+                if (wc) wc.textContent = `${computeWordCount(ch.content || '')} words`;
+            }
+        }
+    } catch (err) {
+        addSystemMessage('Failed to restore version.');
+    }
+}
+
+function exportManuscript(mid, format) {
+    if (!mid) mid = currentManuscriptId;
+    if (!mid) return;
+    window.open(projectUrl(`/manuscripts/${mid}/export?format=${encodeURIComponent(format)}`));
 }
 
 // ============================================================

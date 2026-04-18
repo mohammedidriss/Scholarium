@@ -2230,6 +2230,355 @@ body {
     align-items: center;
 }
 
+/* === Manuscripts (Batch B) === */
+.manuscript-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+.manuscript-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+}
+
+.manuscript-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+}
+
+.manuscript-card-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+}
+
+.manuscript-card-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.manuscript-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.writing-streak-badge {
+    padding: 4px 10px;
+    background: var(--amber-bg);
+    color: var(--amber);
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+/* === Manuscript Editor Layout === */
+#manuscriptEditorView {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.manuscript-editor-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.manuscript-title-display {
+    flex: 1;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.manuscript-header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.manuscript-header-actions select {
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    outline: none;
+}
+
+.manuscript-editor-body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    gap: 0;
+    padding-top: 12px;
+    min-height: 0;
+}
+
+.chapter-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-right: 12px;
+}
+
+.chapter-sidebar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+
+.chapter-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px;
+}
+
+.chapter-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.chapter-item:hover { background: var(--bg-tertiary); color: var(--text); }
+
+.chapter-item.active {
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.chapter-item-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chapter-item-words {
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.7;
+    margin-left: 6px;
+}
+
+.chapter-delete-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 4px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+}
+
+.chapter-item:hover .chapter-delete-btn { opacity: 1; }
+.chapter-delete-btn:hover { color: var(--red); }
+
+.quill-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.chapter-title-bar {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-tertiary);
+}
+
+.chapter-title-bar input {
+    width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: none;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: inherit;
+    outline: none;
+    padding: 4px 0;
+}
+
+.manuscript-editor-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    background: var(--bg-tertiary);
+}
+
+.save-status { color: var(--green); font-size: 10px; }
+
+/* === Quill Dark Theme Overrides === */
+#quillToolbar.ql-toolbar {
+    background: var(--bg-tertiary);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: 6px 8px;
+}
+
+.ql-toolbar .ql-stroke { stroke: var(--text-muted) !important; }
+.ql-toolbar .ql-fill { fill: var(--text-muted) !important; }
+.ql-toolbar .ql-picker-label { color: var(--text-muted) !important; }
+.ql-toolbar button:hover .ql-stroke,
+.ql-toolbar button.ql-active .ql-stroke,
+.ql-toolbar .ql-picker-label:hover,
+.ql-toolbar .ql-picker-label.ql-active { color: var(--accent) !important; stroke: var(--accent) !important; }
+.ql-toolbar button:hover .ql-fill,
+.ql-toolbar button.ql-active .ql-fill { fill: var(--accent) !important; }
+
+.ql-picker-options {
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+}
+
+.ql-picker-item { color: var(--text) !important; }
+.ql-picker-item:hover { color: var(--accent) !important; }
+
+#quillEditor.ql-container {
+    background: var(--bg-secondary);
+    color: var(--text);
+    border: none;
+    font-family: inherit;
+    font-size: 14px;
+    flex: 1;
+    min-height: 300px;
+}
+
+#quillEditor .ql-editor {
+    padding: 16px 20px;
+    line-height: 1.7;
+    min-height: 300px;
+    color: var(--text);
+}
+
+#quillEditor .ql-editor.ql-blank::before {
+    color: var(--text-muted);
+    font-style: normal;
+    left: 20px;
+    right: 20px;
+}
+
+#quillEditor .ql-editor blockquote {
+    border-left: 3px solid var(--accent);
+    color: var(--text-muted);
+    padding-left: 12px;
+}
+
+.ql-citation-btn::before {
+    content: "Cite";
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--amber);
+}
+
+.ql-citation-btn:hover::before { color: var(--accent); }
+
+/* Inline citation styling in editor */
+#quillEditor .manuscript-citation {
+    color: var(--accent);
+    background: rgba(99, 102, 241, 0.08);
+    padding: 0 3px;
+    border-radius: 3px;
+    font-weight: 500;
+}
+
+/* === Citation Picker === */
+.citation-picker-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.citation-picker-item {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.citation-picker-item:hover { border-color: var(--accent); }
+
+.citation-picker-item-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 2px;
+}
+
+.citation-picker-item-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+/* === Version History === */
+.version-item {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+}
+
+.version-item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.version-item-time { font-weight: 600; color: var(--text); }
+.version-item-words { font-size: 10px; color: var(--text-muted); }
+
 /* === Responsive === */
 @media (max-width: 1024px) {
     .left-nav { width: 50px; padding: 6px; }

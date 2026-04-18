@@ -1,13 +1,15 @@
 """Flask web server for the Multi-Project Research Assistant."""
 
+import html as html_module
 import io
 import json
 import os
+import re
 import shutil
 import threading
 import uuid
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -856,6 +858,27 @@ def project_delete_highlight(pid, filename, hid):
 
 # --- Citations ---
 
+@app.route("/api/projects/<pid>/citations", methods=["GET"])
+def project_list_citations(pid):
+    """List all citations for a project as a flat array."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    cit_path = project_path(pid, "citations.json")
+    citations_dict = _load_json(cit_path, default={})
+    # Convert dict to list with "key" field
+    out = []
+    for key, entry in citations_dict.items():
+        item = dict(entry)
+        item["key"] = key
+        out.append(item)
+    # Sort by first author / year
+    out.sort(key=lambda c: (
+        (c.get("authors") or [""])[0].lower(),
+        c.get("year", ""),
+    ))
+    return jsonify(out)
+
+
 @app.route("/api/projects/<pid>/citations/<filename>/generate", methods=["POST"])
 def project_generate_citation(pid, filename):
     """Extract citation metadata from first page via LLM."""
@@ -932,18 +955,12 @@ def project_generate_citation(pid, filename):
 
 
 @app.route("/api/projects/<pid>/citations/<filename>/format", methods=["GET"])
-def project_format_citation(pid, filename):
-    """Return a formatted citation string in the requested style."""
-    if not _get_project(pid):
-        return jsonify({"error": "Project not found"}), 404
+def _format_citation(entry, style):
+    """Format a citation entry in the given style.
 
-    style = request.args.get("style", "apa").lower()
-    cit_path = project_path(pid, "citations.json")
-    citations = _load_json(cit_path, default={})
-    if filename not in citations:
-        return jsonify({"error": "No citation data found. Generate citation first."}), 404
-
-    entry = citations[filename]
+    Returns the formatted string, or None if the style is unsupported.
+    """
+    style = (style or "apa").lower()
     title = entry.get("title", "Untitled")
     authors = entry.get("authors", [])
     year = entry.get("year", "n.d.")
@@ -957,7 +974,6 @@ def project_format_citation(pid, filename):
         for a in author_list:
             parts = a.strip().split()
             if len(parts) >= 2:
-                # "John Smith" → "Smith J"
                 last = parts[-1]
                 initials = "".join(p[0] for p in parts[:-1] if p)
                 out.append(f"{last} {initials}")
@@ -982,18 +998,33 @@ def project_format_citation(pid, filename):
             return f"{first_author}, et al."
 
     if style == "apa":
-        formatted = f"{authors_str} ({year}). {title}. {source}."
-    elif style == "ieee":
-        formatted = f'{authors_str}, "{title}," {source}, {year}.'
-    elif style == "harvard":
-        formatted = f"{authors_str} ({year}) '{title}', {source}."
-    elif style == "mla":
-        formatted = f'{_mla_authors(authors)}. "{title}." {source}, {year}.'
-    elif style == "chicago":
-        formatted = f'{authors_str}. "{title}." {source} ({year}).'
-    elif style == "vancouver":
-        formatted = f"{_vancouver_authors(authors)}. {title}. {source}. {year}."
-    else:
+        return f"{authors_str} ({year}). {title}. {source}."
+    if style == "ieee":
+        return f'{authors_str}, "{title}," {source}, {year}.'
+    if style == "harvard":
+        return f"{authors_str} ({year}) '{title}', {source}."
+    if style == "mla":
+        return f'{_mla_authors(authors)}. "{title}." {source}, {year}.'
+    if style == "chicago":
+        return f'{authors_str}. "{title}." {source} ({year}).'
+    if style == "vancouver":
+        return f"{_vancouver_authors(authors)}. {title}. {source}. {year}."
+    return None
+
+
+def project_format_citation(pid, filename):
+    """Return a formatted citation string in the requested style."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    style = request.args.get("style", "apa").lower()
+    cit_path = project_path(pid, "citations.json")
+    citations = _load_json(cit_path, default={})
+    if filename not in citations:
+        return jsonify({"error": "No citation data found. Generate citation first."}), 404
+
+    formatted = _format_citation(citations[filename], style)
+    if formatted is None:
         return jsonify({"error": "Unsupported style. Use apa, ieee, harvard, mla, chicago, or vancouver."}), 400
 
     return jsonify({"style": style, "citation": formatted})
@@ -1263,6 +1294,508 @@ def project_search_notes(pid):
         if q in haystack:
             results.append(note)
     return jsonify(results)
+
+
+# --- Manuscripts ---
+
+def _count_words(html_content):
+    """Count words in an HTML content string (strips tags)."""
+    if not html_content:
+        return 0
+    text = re.sub(r'<[^>]+>', ' ', html_content)
+    text = html_module.unescape(text)
+    tokens = [t for t in text.split() if t.strip()]
+    return len(tokens)
+
+
+def _strip_html(html_content):
+    """Strip HTML tags and decode entities, returning plain text."""
+    if not html_content:
+        return ""
+    text = re.sub(r'<[^>]+>', '', html_content)
+    return html_module.unescape(text)
+
+
+def _html_to_paragraphs(html_content):
+    """Split HTML content into plain-text paragraphs."""
+    if not html_content:
+        return []
+    # Normalize breaks and closing block tags into newlines
+    normalized = re.sub(r'(?i)<br\s*/?>', '\n', html_content)
+    normalized = re.sub(r'(?i)</p\s*>', '\n', normalized)
+    normalized = re.sub(r'(?i)</div\s*>', '\n', normalized)
+    normalized = re.sub(r'(?i)</li\s*>', '\n', normalized)
+    normalized = re.sub(r'(?i)</h[1-6]\s*>', '\n', normalized)
+    # Strip remaining tags
+    text = re.sub(r'<[^>]+>', '', normalized)
+    text = html_module.unescape(text)
+    paragraphs = [p.strip() for p in text.split("\n")]
+    return [p for p in paragraphs if p]
+
+
+def _latin1(text):
+    """Encode text to latin-1 with replacement for fpdf2 compatibility."""
+    return (text or "").encode("latin-1", "replace").decode("latin-1")
+
+
+def _manuscript_summary(m):
+    """Return a manuscript dict with a total_words summary field."""
+    total = sum(_count_words(c.get("content", "")) for c in m.get("chapters", []))
+    return {
+        "id": m.get("id"),
+        "title": m.get("title"),
+        "citation_style": m.get("citation_style", "apa"),
+        "chapter_count": len(m.get("chapters", [])),
+        "total_words": total,
+        "citations_used": m.get("citations_used", []),
+        "created_at": m.get("created_at"),
+        "updated_at": m.get("updated_at"),
+    }
+
+
+def _log_writing(pid, mid, delta_words):
+    """Record positive word deltas to writing_log.json under today's date."""
+    log_path = project_path(pid, "writing_log.json")
+    log = _load_json(log_path, default={})
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = log.get(today) or {"words_added": 0, "manuscripts_touched": []}
+    if delta_words and delta_words > 0:
+        entry["words_added"] = int(entry.get("words_added", 0)) + int(delta_words)
+    touched = entry.get("manuscripts_touched") or []
+    if mid and mid not in touched:
+        touched.append(mid)
+    entry["manuscripts_touched"] = touched
+    log[today] = entry
+    _save_json(log_path, log)
+
+
+def _snapshot_version(pid, mid, cid, old_content):
+    """Append a snapshot of old chapter content to versions.json, keeping last 20."""
+    ver_path = project_path(pid, "versions.json")
+    versions = _load_json(ver_path, default={})
+    key = f"{mid}:{cid}"
+    entries = versions.get(key, [])
+    entries.append({
+        "timestamp": datetime.now().isoformat(),
+        "content": old_content or "",
+        "words": _count_words(old_content or ""),
+    })
+    if len(entries) > 20:
+        entries = entries[-20:]
+    versions[key] = entries
+    _save_json(ver_path, versions)
+
+
+@app.route("/api/projects/<pid>/manuscripts", methods=["GET"])
+def project_list_manuscripts(pid):
+    """List all manuscripts with summary info."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    manuscripts = _load_json(project_path(pid, "manuscripts.json"), default=[])
+    return jsonify([_manuscript_summary(m) for m in manuscripts])
+
+
+@app.route("/api/projects/<pid>/manuscripts", methods=["POST"])
+def project_create_manuscript(pid):
+    """Create a new manuscript."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Title is required."}), 400
+
+    now = datetime.now().isoformat()
+    manuscript = {
+        "id": uuid.uuid4().hex[:12],
+        "title": title,
+        "chapters": [],
+        "citations_used": [],
+        "citation_style": data.get("citation_style", "apa"),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    manuscripts.append(manuscript)
+    _save_json(path, manuscripts)
+    return jsonify(manuscript), 201
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>", methods=["GET"])
+def project_get_manuscript(pid, mid):
+    """Return a manuscript with all chapter content."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    manuscripts = _load_json(project_path(pid, "manuscripts.json"), default=[])
+    for m in manuscripts:
+        if m.get("id") == mid:
+            result = dict(m)
+            result["total_words"] = sum(_count_words(c.get("content", "")) for c in m.get("chapters", []))
+            return jsonify(result)
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>", methods=["PUT"])
+def project_update_manuscript(pid, mid):
+    """Update manuscript title or citation_style."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.get_json() or {}
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    for m in manuscripts:
+        if m.get("id") == mid:
+            if "title" in data and data["title"] is not None:
+                m["title"] = data["title"]
+            if "citation_style" in data and data["citation_style"] is not None:
+                m["citation_style"] = data["citation_style"]
+            if "citations_used" in data and isinstance(data["citations_used"], list):
+                m["citations_used"] = data["citations_used"]
+            m["updated_at"] = datetime.now().isoformat()
+            _save_json(path, manuscripts)
+            return jsonify(m)
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>", methods=["DELETE"])
+def project_delete_manuscript(pid, mid):
+    """Delete a manuscript by id."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    filtered = [m for m in manuscripts if m.get("id") != mid]
+    if len(filtered) == len(manuscripts):
+        return jsonify({"error": "Manuscript not found"}), 404
+    _save_json(path, filtered)
+    return jsonify({"success": True})
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/chapters", methods=["POST"])
+def project_add_chapter(pid, mid):
+    """Add a chapter to a manuscript."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Chapter title is required."}), 400
+
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    for m in manuscripts:
+        if m.get("id") == mid:
+            now = datetime.now().isoformat()
+            chapters = m.setdefault("chapters", [])
+            next_order = max((c.get("order", 0) for c in chapters), default=-1) + 1
+            chapter = {
+                "id": uuid.uuid4().hex[:12],
+                "title": title,
+                "content": data.get("content", ""),
+                "order": next_order,
+                "created_at": now,
+                "updated_at": now,
+            }
+            chapters.append(chapter)
+            m["updated_at"] = now
+            _save_json(path, manuscripts)
+            return jsonify(chapter), 201
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/chapters/<cid>", methods=["PUT"])
+def project_update_chapter(pid, mid, cid):
+    """Update a chapter: title, content, order. Logs word diff and snapshots."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.get_json() or {}
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    for m in manuscripts:
+        if m.get("id") != mid:
+            continue
+        for c in m.get("chapters", []):
+            if c.get("id") != cid:
+                continue
+
+            old_content = c.get("content", "")
+            content_changed = "content" in data and data["content"] is not None and data["content"] != old_content
+
+            if content_changed:
+                _snapshot_version(pid, mid, cid, old_content)
+                old_words = _count_words(old_content)
+                new_words = _count_words(data["content"])
+                c["content"] = data["content"]
+                delta = new_words - old_words
+                if delta > 0:
+                    _log_writing(pid, mid, delta)
+                else:
+                    # Still mark manuscript as touched today
+                    _log_writing(pid, mid, 0)
+
+            if "title" in data and data["title"] is not None:
+                c["title"] = data["title"]
+            if "order" in data and data["order"] is not None:
+                try:
+                    c["order"] = int(data["order"])
+                except (TypeError, ValueError):
+                    pass
+
+            c["updated_at"] = datetime.now().isoformat()
+            m["updated_at"] = c["updated_at"]
+            _save_json(path, manuscripts)
+            return jsonify(c)
+        return jsonify({"error": "Chapter not found"}), 404
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/chapters/<cid>", methods=["DELETE"])
+def project_delete_chapter(pid, mid, cid):
+    """Remove a chapter from a manuscript."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    for m in manuscripts:
+        if m.get("id") != mid:
+            continue
+        chapters = m.get("chapters", [])
+        new_chapters = [c for c in chapters if c.get("id") != cid]
+        if len(new_chapters) == len(chapters):
+            return jsonify({"error": "Chapter not found"}), 404
+        m["chapters"] = new_chapters
+        m["updated_at"] = datetime.now().isoformat()
+        _save_json(path, manuscripts)
+        return jsonify({"success": True})
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/versions/<cid>", methods=["GET"])
+def project_list_chapter_versions(pid, mid, cid):
+    """List saved versions for a chapter."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    versions = _load_json(project_path(pid, "versions.json"), default={})
+    key = f"{mid}:{cid}"
+    return jsonify(versions.get(key, []))
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/chapters/<cid>/restore", methods=["POST"])
+def project_restore_chapter_version(pid, mid, cid):
+    """Restore chapter content from a prior version (snapshots current first)."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.get_json() or {}
+    if "version_index" not in data:
+        return jsonify({"error": "version_index is required."}), 400
+    try:
+        idx = int(data["version_index"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "version_index must be an integer."}), 400
+
+    ver_path = project_path(pid, "versions.json")
+    versions = _load_json(ver_path, default={})
+    key = f"{mid}:{cid}"
+    entries = versions.get(key, [])
+    if idx < 0 or idx >= len(entries):
+        return jsonify({"error": "version_index out of range."}), 400
+
+    target = entries[idx]
+    restored_content = target.get("content", "")
+
+    path = project_path(pid, "manuscripts.json")
+    manuscripts = _load_json(path, default=[])
+    for m in manuscripts:
+        if m.get("id") != mid:
+            continue
+        for c in m.get("chapters", []):
+            if c.get("id") != cid:
+                continue
+            old_content = c.get("content", "")
+            _snapshot_version(pid, mid, cid, old_content)
+            old_words = _count_words(old_content)
+            new_words = _count_words(restored_content)
+            c["content"] = restored_content
+            c["updated_at"] = datetime.now().isoformat()
+            m["updated_at"] = c["updated_at"]
+            _save_json(path, manuscripts)
+            delta = new_words - old_words
+            if delta > 0:
+                _log_writing(pid, mid, delta)
+            else:
+                _log_writing(pid, mid, 0)
+            return jsonify(c)
+        return jsonify({"error": "Chapter not found"}), 404
+    return jsonify({"error": "Manuscript not found"}), 404
+
+
+def _export_manuscript_pdf(manuscript, bibliography):
+    """Build a PDF for a manuscript and return a Flask send_file response."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+
+    # Title page
+    pdf.add_page()
+    pdf.ln(60)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.multi_cell(0, 12, _latin1(manuscript.get("title", "Untitled")), align="C")
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "", 12)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 8, _latin1(datetime.now().strftime("%B %d, %Y")),
+             new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_text_color(0, 0, 0)
+
+    # Chapters, one per page
+    chapters = sorted(manuscript.get("chapters", []), key=lambda c: c.get("order", 0))
+    for ch in chapters:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.multi_cell(0, 10, _latin1(ch.get("title", "Untitled Chapter")))
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "", 12)
+        body = _strip_html(ch.get("content", ""))
+        body = _latin1(body)
+        if body.strip():
+            pdf.multi_cell(0, 7, body)
+
+    # Bibliography page
+    if bibliography:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "Bibliography", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "", 11)
+        for line in bibliography:
+            pdf.multi_cell(0, 6, _latin1(line))
+            pdf.ln(1)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+    safe_title = re.sub(r'[^A-Za-z0-9_-]+', '_', manuscript.get("title", "manuscript"))[:60] or "manuscript"
+    return send_file(buf, mimetype="application/pdf", as_attachment=True,
+                     download_name=f"{safe_title}.pdf")
+
+
+def _export_manuscript_docx(manuscript, bibliography):
+    """Build a DOCX for a manuscript and return a Flask send_file response."""
+    from docx import Document
+
+    doc = Document()
+
+    # Title page
+    doc.add_heading(manuscript.get("title", "Untitled"), level=0)
+    doc.add_paragraph(datetime.now().strftime("%B %d, %Y"))
+    doc.add_page_break()
+
+    chapters = sorted(manuscript.get("chapters", []), key=lambda c: c.get("order", 0))
+    for idx, ch in enumerate(chapters):
+        doc.add_heading(ch.get("title", "Untitled Chapter"), level=1)
+        for para in _html_to_paragraphs(ch.get("content", "")):
+            doc.add_paragraph(para)
+        if idx < len(chapters) - 1:
+            doc.add_page_break()
+
+    if bibliography:
+        doc.add_page_break()
+        doc.add_heading("Bibliography", level=1)
+        for line in bibliography:
+            doc.add_paragraph(line)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    safe_title = re.sub(r'[^A-Za-z0-9_-]+', '_', manuscript.get("title", "manuscript"))[:60] or "manuscript"
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=f"{safe_title}.docx",
+    )
+
+
+@app.route("/api/projects/<pid>/manuscripts/<mid>/export", methods=["GET"])
+def project_export_manuscript(pid, mid):
+    """Export a manuscript as PDF or DOCX, including a bibliography."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    fmt = (request.args.get("format", "pdf") or "pdf").lower()
+    style = (request.args.get("style") or "").lower()
+
+    manuscripts = _load_json(project_path(pid, "manuscripts.json"), default=[])
+    manuscript = next((m for m in manuscripts if m.get("id") == mid), None)
+    if not manuscript:
+        return jsonify({"error": "Manuscript not found"}), 404
+
+    if not style:
+        style = (manuscript.get("citation_style") or "apa").lower()
+
+    # Build bibliography from citations_used
+    citations = _load_json(project_path(pid, "citations.json"), default={})
+    bibliography = []
+    for key in manuscript.get("citations_used", []) or []:
+        entry = citations.get(key)
+        if not entry:
+            continue
+        formatted = _format_citation(entry, style)
+        if formatted:
+            bibliography.append(formatted)
+    bibliography.sort(key=lambda s: s.lower())
+
+    if fmt == "pdf":
+        return _export_manuscript_pdf(manuscript, bibliography)
+    if fmt == "docx":
+        return _export_manuscript_docx(manuscript, bibliography)
+    return jsonify({"error": "Unsupported format. Use pdf or docx."}), 400
+
+
+@app.route("/api/projects/<pid>/writing-streak", methods=["GET"])
+def project_writing_streak(pid):
+    """Compute current writing streak (consecutive days with >100 words)."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    log = _load_json(project_path(pid, "writing_log.json"), default={})
+    today = datetime.now().date()
+    today_key = today.strftime("%Y-%m-%d")
+    today_entry = log.get(today_key) or {}
+    today_words = int(today_entry.get("words_added", 0) or 0)
+
+    streak = 0
+    days = []
+    # Start from today; if today has >100, count it. Otherwise start from yesterday.
+    if today_words > 100:
+        cursor = today
+    else:
+        cursor = today - timedelta(days=1)
+
+    while True:
+        key = cursor.strftime("%Y-%m-%d")
+        entry = log.get(key) or {}
+        words = int(entry.get("words_added", 0) or 0)
+        if words > 100:
+            streak += 1
+            days.append({"date": key, "words_added": words})
+            cursor = cursor - timedelta(days=1)
+        else:
+            break
+
+    return jsonify({
+        "streak": streak,
+        "today_words": today_words,
+        "days": days,
+    })
 
 
 # --- Collections ---
