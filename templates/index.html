@@ -126,6 +126,9 @@
                                 <button class="citation-tab active" onclick="showCitationStyle('apa')">APA</button>
                                 <button class="citation-tab" onclick="showCitationStyle('ieee')">IEEE</button>
                                 <button class="citation-tab" onclick="showCitationStyle('harvard')">Harvard</button>
+                                <button class="citation-tab" onclick="showCitationStyle('mla')">MLA</button>
+                                <button class="citation-tab" onclick="showCitationStyle('chicago')">Chicago</button>
+                                <button class="citation-tab" onclick="showCitationStyle('vancouver')">Vancouver</button>
                             </div>
                             <div class="citation-text" id="citationText">Generating citation...</div>
                             <button class="answer-copy-btn" onclick="copyCitationText()">Copy Citation</button>
@@ -155,7 +158,17 @@
 
                 <!-- Documents Tab (full page) -->
                 <div class="tab-page" id="tabDocs" style="display: none;">
-                    <div class="tab-page-header"><h2>Documents</h2></div>
+                    <div class="tab-page-header">
+                        <h2>Documents</h2>
+                        <div class="tab-page-actions">
+                            <button class="doc-action-btn" onclick="showDoiDialog()">+ DOI</button>
+                            <label class="doc-action-btn" title="Import BibTeX">
+                                + BibTeX
+                                <input type="file" id="bibtexFileInput" accept=".bib" hidden>
+                            </label>
+                            <button class="doc-action-btn" onclick="exportBibtex()">Export .bib</button>
+                        </div>
+                    </div>
                     <div class="doc-filter-bar">
                         <select id="statusFilter" onchange="applyDocFilters()"><option value="all">All Status</option><option value="unread">Unread</option><option value="reading">Reading</option><option value="reviewed">Reviewed</option></select>
                         <select id="collectionFilter" onchange="applyDocFilters()"><option value="all">All Collections</option></select>
@@ -163,11 +176,35 @@
                     <div class="doc-list" id="docList"><p class="docs-empty">Loading...</p></div>
                 </div>
 
+                <!-- DOI Dialog -->
+                <div class="citation-modal" id="doiDialog" style="display: none;">
+                    <div class="citation-modal-content">
+                        <div class="citation-modal-header">
+                            <strong>Add Reference by DOI</strong>
+                            <button class="doc-summary-close" onclick="closeDoiDialog()">&#10005;</button>
+                        </div>
+                        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Paste a DOI (e.g. <code>10.1038/nature12373</code>) to fetch metadata from CrossRef.</p>
+                        <input type="text" id="doiInput" placeholder="10.xxxx/xxxxx or https://doi.org/..." style="width:100%;padding:10px;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);font-family:inherit;font-size:13px;margin-bottom:10px;">
+                        <div id="doiResult" style="font-size:12px;color:var(--text-muted);min-height:40px;margin-bottom:10px;"></div>
+                        <button class="note-save-btn" onclick="fetchDoi()">Fetch &amp; Save</button>
+                    </div>
+                </div>
+
                 <!-- Notes Tab (full page) -->
                 <div class="tab-page" id="tabNotes" style="display: none;">
-                    <div class="tab-page-header"><h2>Notes</h2><button class="new-note-btn" onclick="createNote()">+ New Note</button></div>
+                    <div class="tab-page-header">
+                        <h2>Notes</h2>
+                        <button class="new-note-btn" onclick="createNote()">+ New Note</button>
+                    </div>
+                    <div class="notes-search-bar" id="notesSearchBar">
+                        <input type="text" id="notesSearchInput" placeholder="&#128269; Search notes (title, content, tags)..." oninput="searchNotes()">
+                        <select id="tagFilter" onchange="searchNotes()">
+                            <option value="all">All Tags</option>
+                        </select>
+                    </div>
                     <div class="note-editor" id="noteEditor" style="display: none;">
                         <input type="text" class="note-title-input" id="noteTitleInput" placeholder="Note title...">
+                        <input type="text" class="note-tags-input" id="noteTagsInput" placeholder="Tags (comma-separated, e.g. blockchain, security)">
                         <textarea class="note-content-input" id="noteContentInput" placeholder="Write your note... Use [[Note Title]] to link." rows="16"></textarea>
                         <div class="note-editor-actions">
                             <button class="note-save-btn" onclick="saveCurrentNote()">Save</button>

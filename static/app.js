@@ -672,30 +672,63 @@ async function loadNotes() {
     try {
         const resp = await fetch(projectUrl('/notes'));
         allNotes = await resp.json();
-        renderNotesList();
+        refreshTagFilter();
+        renderNotesList(allNotes);
     } catch { /* ignore on initial load */ }
 }
 
-function renderNotesList() {
+function refreshTagFilter() {
+    const select = document.getElementById('tagFilter');
+    if (!select) return;
+    const tagSet = new Set();
+    for (const n of allNotes) {
+        for (const t of (n.tags || [])) tagSet.add(t);
+    }
+    const currentValue = select.value;
+    const tags = [...tagSet].sort();
+    let html = '<option value="all">All Tags</option>';
+    for (const t of tags) html += `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`;
+    select.innerHTML = html;
+    if ([...tagSet].includes(currentValue)) select.value = currentValue;
+}
+
+function renderNotesList(notes) {
     const list = document.getElementById('notesList');
     if (!list) return;
-    if (allNotes.length === 0) {
-        list.innerHTML = '<p class="notes-empty">No notes yet. Click "+ New Note" to start.</p>';
+    const visibleNotes = notes || allNotes;
+    if (!visibleNotes || visibleNotes.length === 0) {
+        list.innerHTML = '<p class="notes-empty">No notes match. Clear filters or click "+ New Note" to create one.</p>';
         return;
     }
     let html = '';
-    for (const note of allNotes) {
+    for (const note of visibleNotes) {
         const preview = note.content.length > 80 ? note.content.slice(0, 80) + '...' : note.content;
         const date = new Date(note.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
         const linkCount = getBacklinks(note.title).length;
         const linkBadge = linkCount > 0 ? `<span class="note-link-badge">${linkCount} link${linkCount > 1 ? 's' : ''}</span>` : '';
+        const tagsHtml = (note.tags && note.tags.length)
+            ? `<div class="note-card-tags">${note.tags.map(t => `<span class="note-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+            : '';
         html += `<div class="note-card" onclick="openNote('${note.id}')">
             <div class="note-card-title">${escapeHtml(note.title)} ${linkBadge}</div>
             <div class="note-card-preview">${escapeHtml(preview || 'Empty note')}</div>
+            ${tagsHtml}
             <div class="note-card-date">${date}</div>
         </div>`;
     }
     list.innerHTML = html;
+}
+
+function searchNotes() {
+    const q = (document.getElementById('notesSearchInput')?.value || '').trim().toLowerCase();
+    const tagFilter = document.getElementById('tagFilter')?.value || 'all';
+    const filtered = allNotes.filter(n => {
+        const haystack = `${n.title} ${n.content} ${(n.tags || []).join(' ')}`.toLowerCase();
+        const matchesQuery = !q || haystack.includes(q);
+        const matchesTag = tagFilter === 'all' || (n.tags || []).includes(tagFilter);
+        return matchesQuery && matchesTag;
+    });
+    renderNotesList(filtered);
 }
 
 async function createNote() {
@@ -704,11 +737,11 @@ async function createNote() {
         const resp = await fetch(projectUrl('/notes'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: 'Untitled Note', content: '' }),
+            body: JSON.stringify({ title: 'Untitled Note', content: '', tags: [] }),
         });
         const note = await resp.json();
         allNotes.unshift(note);
-        renderNotesList();
+        renderNotesList(allNotes);
         openNote(note.id);
     } catch (err) {
         addSystemMessage('Failed to create note: ' + err.message);
@@ -721,8 +754,12 @@ function openNote(id) {
     currentNoteId = id;
     document.getElementById('noteTitleInput').value = note.title;
     document.getElementById('noteContentInput').value = note.content;
+    const tagsInput = document.getElementById('noteTagsInput');
+    if (tagsInput) tagsInput.value = (note.tags || []).join(', ');
     document.getElementById('noteEditor').style.display = 'block';
     document.getElementById('notesList').style.display = 'none';
+    const searchBar = document.getElementById('notesSearchBar');
+    if (searchBar) searchBar.style.display = 'none';
     const newBtn = document.querySelector('.new-note-btn');
     if (newBtn) newBtn.style.display = 'none';
     renderBacklinks(note.title);
@@ -732,6 +769,8 @@ function closeNoteEditor() {
     saveCurrentNote();
     document.getElementById('noteEditor').style.display = 'none';
     document.getElementById('notesList').style.display = 'block';
+    const searchBar = document.getElementById('notesSearchBar');
+    if (searchBar) searchBar.style.display = 'flex';
     const newBtn = document.querySelector('.new-note-btn');
     if (newBtn) newBtn.style.display = 'block';
     currentNoteId = null;
@@ -741,17 +780,20 @@ async function saveCurrentNote() {
     if (!currentNoteId || !currentProjectId) return;
     const title = document.getElementById('noteTitleInput').value.trim() || 'Untitled Note';
     const content = document.getElementById('noteContentInput').value;
+    const tagsRaw = document.getElementById('noteTagsInput')?.value || '';
+    const tags = tagsRaw.split(',').map(t => t.trim()).filter(t => t.length > 0);
     try {
         const resp = await fetch(projectUrl(`/notes/${currentNoteId}`), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, content }),
+            body: JSON.stringify({ title, content, tags }),
         });
         const updated = await resp.json();
         const idx = allNotes.findIndex(n => n.id === currentNoteId);
         if (idx !== -1) allNotes[idx] = updated;
         allNotes.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-        renderNotesList();
+        refreshTagFilter();
+        renderNotesList(allNotes);
     } catch { /* silent fail */ }
 }
 
@@ -760,9 +802,12 @@ async function deleteCurrentNote() {
     try {
         await fetch(projectUrl(`/notes/${currentNoteId}`), { method: 'DELETE' });
         allNotes = allNotes.filter(n => n.id !== currentNoteId);
-        renderNotesList();
+        refreshTagFilter();
+        renderNotesList(allNotes);
         document.getElementById('noteEditor').style.display = 'none';
         document.getElementById('notesList').style.display = 'block';
+        const searchBar = document.getElementById('notesSearchBar');
+        if (searchBar) searchBar.style.display = 'flex';
         const newBtn = document.querySelector('.new-note-btn');
         if (newBtn) newBtn.style.display = 'block';
         currentNoteId = null;
@@ -1875,8 +1920,112 @@ if (questionInput) {
 // Auto-save note on blur
 const noteContentInput = document.getElementById('noteContentInput');
 const noteTitleInput = document.getElementById('noteTitleInput');
+const noteTagsInput = document.getElementById('noteTagsInput');
 if (noteContentInput) noteContentInput.addEventListener('blur', saveCurrentNote);
 if (noteTitleInput) noteTitleInput.addEventListener('blur', saveCurrentNote);
+if (noteTagsInput) noteTagsInput.addEventListener('blur', saveCurrentNote);
+
+// BibTeX import file input
+const bibtexFileInput = document.getElementById('bibtexFileInput');
+if (bibtexFileInput) {
+    bibtexFileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file || !currentProjectId) return;
+        const form = new FormData();
+        form.append('file', file);
+        try {
+            const resp = await fetch(projectUrl('/bibtex/import'), { method: 'POST', body: form });
+            const data = await resp.json();
+            if (data.success) {
+                addSystemMessage(`Imported ${data.imported} BibTeX entries.`);
+            } else {
+                addSystemMessage('BibTeX import failed: ' + (data.error || 'unknown'));
+            }
+        } catch (err) {
+            addSystemMessage('BibTeX import failed: ' + err.message);
+        }
+        bibtexFileInput.value = '';
+    });
+}
+
+// === BibTeX Export ===
+async function exportBibtex() {
+    if (!requireProject()) return;
+    try {
+        const resp = await fetch(projectUrl('/bibtex/export'));
+        if (!resp.ok) {
+            const err = await resp.json();
+            addSystemMessage('Export failed: ' + (err.error || 'unknown'));
+            return;
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'bibliography.bib';
+        a.click();
+        URL.revokeObjectURL(url);
+        addSystemMessage('Bibliography exported.');
+    } catch (err) {
+        addSystemMessage('Export failed: ' + err.message);
+    }
+}
+
+// === DOI Lookup ===
+function showDoiDialog() {
+    if (!requireProject()) return;
+    const dialog = document.getElementById('doiDialog');
+    const input = document.getElementById('doiInput');
+    const result = document.getElementById('doiResult');
+    if (dialog) dialog.style.display = 'flex';
+    if (input) { input.value = ''; input.focus(); }
+    if (result) result.innerHTML = '';
+}
+
+function closeDoiDialog() {
+    const dialog = document.getElementById('doiDialog');
+    if (dialog) dialog.style.display = 'none';
+}
+
+async function fetchDoi() {
+    if (!currentProjectId) return;
+    const input = document.getElementById('doiInput');
+    const result = document.getElementById('doiResult');
+    const doi = (input?.value || '').trim();
+    if (!doi) {
+        if (result) result.innerHTML = '<span style="color:var(--red)">Please enter a DOI.</span>';
+        return;
+    }
+    if (result) result.innerHTML = '<span class="spinner"></span> Looking up DOI...';
+
+    try {
+        const resp = await fetch(projectUrl('/citations/from-doi'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ doi }),
+        });
+        const data = await resp.json();
+        if (data.error) {
+            if (result) result.innerHTML = `<span style="color:var(--red)">${escapeHtml(data.error)}</span>`;
+            return;
+        }
+        const e = data.entry;
+        const authorsStr = (e.authors || []).join(', ') || 'Unknown';
+        if (result) {
+            result.innerHTML = `
+                <div style="padding:10px;background:var(--bg-tertiary);border-radius:var(--radius);border:1px solid var(--green);">
+                    <div style="font-weight:600;color:var(--text);margin-bottom:4px;">${escapeHtml(e.title)}</div>
+                    <div>${escapeHtml(authorsStr)} (${escapeHtml(e.year)})</div>
+                    <div style="color:var(--text-muted);">${escapeHtml(e.source_info)}</div>
+                </div>
+                <div style="color:var(--green);margin-top:8px;">&#10003; Saved to citations.</div>
+            `;
+        }
+        addSystemMessage(`Added DOI reference: ${e.title}`);
+    } catch (err) {
+        if (result) result.innerHTML = `<span style="color:var(--red)">Lookup failed: ${escapeHtml(err.message)}</span>`;
+    }
+}
 
 // Start on project selection screen
 showProjectScreen();

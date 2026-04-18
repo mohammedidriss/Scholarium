@@ -2159,6 +2159,77 @@ body {
     color: var(--text);
 }
 
+/* === Notes Search & Tags === */
+.notes-search-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.notes-search-bar input[type="text"] {
+    flex: 1;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+}
+
+.notes-search-bar input[type="text"]:focus { border-color: var(--accent); }
+
+.notes-search-bar select {
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    min-width: 140px;
+}
+
+.note-tags-input {
+    width: 100%;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    margin-bottom: 8px;
+}
+
+.note-tags-input:focus { border-color: var(--accent); }
+
+.note-card-tags {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+.note-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent);
+    border-radius: 8px;
+    font-weight: 500;
+}
+
+/* === Tab Page Actions (Docs toolbar) === */
+.tab-page-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
 /* === Responsive === */
 @media (max-width: 1024px) {
     .left-nav { width: 50px; padding: 6px; }

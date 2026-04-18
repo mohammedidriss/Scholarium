@@ -661,6 +661,7 @@ def project_create_note(pid):
         "id": uuid.uuid4().hex[:12],
         "title": data.get("title", "Untitled Note"),
         "content": data.get("content", ""),
+        "tags": data.get("tags", []),
         "created_at": now,
         "updated_at": now,
     }
@@ -686,6 +687,8 @@ def project_update_note(pid, nid):
                 note["title"] = data["title"]
             if "content" in data:
                 note["content"] = data["content"]
+            if "tags" in data:
+                note["tags"] = data["tags"]
             note["updated_at"] = datetime.now().isoformat()
             _save_json(notes_path, notes)
             return jsonify(note)
@@ -948,16 +951,318 @@ def project_format_citation(pid, filename):
 
     authors_str = ", ".join(authors) if authors else "Unknown"
 
+    # Build a Vancouver-style author list: "Smith J, Jones K"
+    def _vancouver_authors(author_list):
+        out = []
+        for a in author_list:
+            parts = a.strip().split()
+            if len(parts) >= 2:
+                # "John Smith" → "Smith J"
+                last = parts[-1]
+                initials = "".join(p[0] for p in parts[:-1] if p)
+                out.append(f"{last} {initials}")
+            else:
+                out.append(a)
+        return ", ".join(out) if out else "Unknown"
+
+    # MLA author format: "Smith, John"
+    def _mla_authors(author_list):
+        if not author_list:
+            return "Unknown"
+        a = author_list[0].strip().split()
+        if len(a) >= 2:
+            first_author = f"{a[-1]}, {' '.join(a[:-1])}"
+        else:
+            first_author = author_list[0]
+        if len(author_list) == 1:
+            return first_author
+        elif len(author_list) == 2:
+            return f"{first_author}, and {author_list[1]}"
+        else:
+            return f"{first_author}, et al."
+
     if style == "apa":
         formatted = f"{authors_str} ({year}). {title}. {source}."
     elif style == "ieee":
         formatted = f'{authors_str}, "{title}," {source}, {year}.'
     elif style == "harvard":
         formatted = f"{authors_str} ({year}) '{title}', {source}."
+    elif style == "mla":
+        formatted = f'{_mla_authors(authors)}. "{title}." {source}, {year}.'
+    elif style == "chicago":
+        formatted = f'{authors_str}. "{title}." {source} ({year}).'
+    elif style == "vancouver":
+        formatted = f"{_vancouver_authors(authors)}. {title}. {source}. {year}."
     else:
-        return jsonify({"error": "Unsupported style. Use apa, ieee, or harvard."}), 400
+        return jsonify({"error": "Unsupported style. Use apa, ieee, harvard, mla, chicago, or vancouver."}), 400
 
     return jsonify({"style": style, "citation": formatted})
+
+
+# --- BibTeX Import/Export ---
+
+def _citation_to_bibtex(key, entry):
+    """Convert a citation entry to a BibTeX string."""
+    title = entry.get("title", "Untitled").replace("{", "").replace("}", "")
+    authors = entry.get("authors", [])
+    year = entry.get("year", "")
+    source = entry.get("source_info", "")
+    authors_bib = " and ".join(authors) if authors else "Unknown"
+    lines = [f"@article{{{key},"]
+    lines.append(f"  title   = {{{title}}},")
+    lines.append(f"  author  = {{{authors_bib}}},")
+    lines.append(f"  year    = {{{year}}},")
+    if source:
+        lines.append(f"  journal = {{{source}}},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _parse_bibtex(text):
+    """Parse BibTeX text into a list of entries."""
+    import re
+    entries = []
+    # Split into entries by @type{...
+    entry_pattern = re.compile(r'@(\w+)\s*\{\s*([^,]+),\s*([^@]*?)\n\s*\}', re.DOTALL)
+    for match in entry_pattern.finditer(text):
+        entry_type = match.group(1).lower()
+        key = match.group(2).strip()
+        fields_text = match.group(3)
+        # Parse fields: key = {value} or key = "value"
+        fields = {}
+        field_pattern = re.compile(r'(\w+)\s*=\s*[{"]([^}"]+)[}"]\s*,?', re.DOTALL)
+        for f_match in field_pattern.finditer(fields_text):
+            fields[f_match.group(1).lower()] = f_match.group(2).strip()
+        # Convert to citation format
+        authors = []
+        if "author" in fields:
+            authors = [a.strip() for a in fields["author"].split(" and ")]
+        entries.append({
+            "key": key,
+            "type": entry_type,
+            "title": fields.get("title", ""),
+            "authors": authors,
+            "year": fields.get("year", ""),
+            "source_info": fields.get("journal", "") or fields.get("booktitle", ""),
+        })
+    return entries
+
+
+@app.route("/api/projects/<pid>/bibtex/export", methods=["GET"])
+def project_export_bibtex(pid):
+    """Export all project citations as a .bib file."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    citations = _load_json(project_path(pid, "citations.json"), default={})
+    if not citations:
+        return jsonify({"error": "No citations to export."}), 400
+
+    lines = []
+    for fname, entry in citations.items():
+        # Generate a BibTeX key from author+year
+        authors = entry.get("authors", [])
+        first_author = authors[0].split()[-1].lower() if authors else "unknown"
+        year = entry.get("year", "nd")
+        key = f"{first_author}{year}"
+        # Sanitize key
+        import re
+        key = re.sub(r'[^a-zA-Z0-9]', '', key) or "ref"
+        lines.append(_citation_to_bibtex(key, entry))
+
+    bib_content = "\n\n".join(lines)
+    buf = io.BytesIO(bib_content.encode("utf-8"))
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="application/x-bibtex",
+        as_attachment=True,
+        download_name=f"{pid}_bibliography.bib",
+    )
+
+
+@app.route("/api/projects/<pid>/bibtex/import", methods=["POST"])
+def project_import_bibtex(pid):
+    """Import citations from a BibTeX file (text in request body or file upload)."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    # Accept either uploaded file or raw text
+    bib_text = ""
+    if "file" in request.files:
+        bib_text = request.files["file"].read().decode("utf-8", errors="replace")
+    else:
+        data = request.get_json() or {}
+        bib_text = data.get("bibtex", "")
+
+    if not bib_text.strip():
+        return jsonify({"error": "No BibTeX content provided."}), 400
+
+    entries = _parse_bibtex(bib_text)
+    if not entries:
+        return jsonify({"error": "No valid BibTeX entries found."}), 400
+
+    # Store entries as citations — keyed by citation key (not filename, since no PDF)
+    cit_path = project_path(pid, "citations.json")
+    citations = _load_json(cit_path, default={})
+    now = datetime.now().isoformat()
+    imported_count = 0
+    for entry in entries:
+        # Use a synthetic "filename" for BibTeX-only entries: bib:<key>
+        synthetic_name = f"bib:{entry['key']}"
+        citations[synthetic_name] = {
+            "title": entry["title"],
+            "authors": entry["authors"],
+            "year": entry["year"],
+            "source_info": entry["source_info"],
+            "generated_at": now,
+            "source": "bibtex",
+            "bibtex_key": entry["key"],
+        }
+        imported_count += 1
+
+    _save_json(cit_path, citations)
+    return jsonify({"success": True, "imported": imported_count})
+
+
+# --- DOI Lookup (CrossRef) ---
+
+@app.route("/api/doi-lookup", methods=["GET"])
+def doi_lookup():
+    """Fetch metadata for a DOI from CrossRef."""
+    import requests as req
+    doi = request.args.get("doi", "").strip()
+    if not doi:
+        return jsonify({"error": "DOI parameter required."}), 400
+
+    # Clean DOI (remove URL prefix if present)
+    doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+
+    try:
+        resp = req.get(
+            f"https://api.crossref.org/works/{doi}",
+            headers={"User-Agent": "Scholarium-Research-Assistant (mailto:research@local)"},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return jsonify({"error": "DOI not found."}), 404
+        resp.raise_for_status()
+        data = resp.json().get("message", {})
+
+        # Extract authors
+        authors = []
+        for a in data.get("author", []):
+            given = a.get("given", "")
+            family = a.get("family", "")
+            if family:
+                authors.append(f"{given} {family}".strip())
+
+        # Extract year
+        year = ""
+        issued = data.get("issued", {}).get("date-parts", [[]])
+        if issued and issued[0]:
+            year = str(issued[0][0])
+
+        # Extract title (first element of title array)
+        title = (data.get("title") or [""])[0]
+
+        # Source: journal or book name
+        source = (data.get("container-title") or [""])[0]
+
+        return jsonify({
+            "doi": doi,
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "source_info": source,
+            "type": data.get("type", ""),
+            "url": data.get("URL", f"https://doi.org/{doi}"),
+        })
+    except req.Timeout:
+        return jsonify({"error": "CrossRef request timed out."}), 504
+    except req.ConnectionError:
+        return jsonify({"error": "Cannot reach CrossRef. Check your internet connection."}), 503
+    except Exception as e:
+        return jsonify({"error": f"Lookup failed: {str(e)}"}), 500
+
+
+@app.route("/api/projects/<pid>/citations/from-doi", methods=["POST"])
+def project_create_citation_from_doi(pid):
+    """Fetch DOI metadata via CrossRef and save as a citation."""
+    import requests as req
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    data = request.get_json() or {}
+    doi = data.get("doi", "").strip()
+    if not doi:
+        return jsonify({"error": "DOI required."}), 400
+    doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+
+    try:
+        resp = req.get(
+            f"https://api.crossref.org/works/{doi}",
+            headers={"User-Agent": "Scholarium-Research-Assistant (mailto:research@local)"},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return jsonify({"error": "DOI not found."}), 404
+        resp.raise_for_status()
+        cr = resp.json().get("message", {})
+
+        authors = []
+        for a in cr.get("author", []):
+            given = a.get("given", "")
+            family = a.get("family", "")
+            if family:
+                authors.append(f"{given} {family}".strip())
+        year = ""
+        issued = cr.get("issued", {}).get("date-parts", [[]])
+        if issued and issued[0]:
+            year = str(issued[0][0])
+
+        entry = {
+            "title": (cr.get("title") or [""])[0],
+            "authors": authors,
+            "year": year,
+            "source_info": (cr.get("container-title") or [""])[0],
+            "doi": doi,
+            "source": "crossref",
+            "generated_at": datetime.now().isoformat(),
+        }
+
+        cit_path = project_path(pid, "citations.json")
+        citations = _load_json(cit_path, default={})
+        key = f"doi:{doi}"
+        citations[key] = entry
+        _save_json(cit_path, citations)
+        return jsonify({"success": True, "key": key, "entry": entry})
+    except Exception as e:
+        return jsonify({"error": f"Lookup failed: {str(e)}"}), 500
+
+
+# --- Notes Search (Full-Text) ---
+
+@app.route("/api/projects/<pid>/notes/search", methods=["GET"])
+def project_search_notes(pid):
+    """Search notes by title and content."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    q = request.args.get("q", "").strip().lower()
+    notes = _load_json(project_path(pid, "notes.json"), default=[])
+    if not q:
+        return jsonify(notes)
+    # Search tag, title, content
+    results = []
+    for note in notes:
+        haystack = (
+            (note.get("title", "") + " " +
+             note.get("content", "") + " " +
+             " ".join(note.get("tags", [])))
+            .lower()
+        )
+        if q in haystack:
+            results.append(note)
+    return jsonify(results)
 
 
 # --- Collections ---
