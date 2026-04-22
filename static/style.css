@@ -247,6 +247,12 @@ body {
     margin-bottom: 20px;
 }
 
+.project-selection-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
 .project-selection-title-row h2 {
     font-size: 18px;
     font-weight: 600;
@@ -1814,27 +1820,52 @@ body {
 .highlight-delete-btn:hover { color: var(--red); }
 
 /* === Citation Modal === */
+/* Full-screen modal overlay with backdrop (used for citations, new project, doi, etc.) */
 .citation-modal {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 50;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+/* When JS sets style.display = 'flex' via showProjectModal/showCitationPicker etc. */
+.citation-modal[style*="flex"] {
+    animation: modalFadeIn 0.15s ease-out;
+}
+
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.citation-modal-content {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    width: 480px;
-    max-width: 90%;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    width: 560px;
+    max-width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 20px 24px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
 }
-
-.citation-modal-content { padding: 16px; }
 
 .citation-modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.citation-modal-header strong {
+    font-size: 15px;
+    color: var(--text);
 }
 
 .citation-tabs {
@@ -2578,6 +2609,326 @@ body {
 
 .version-item-time { font-weight: 600; color: var(--text); }
 .version-item-words { font-size: 10px; color: var(--text-muted); }
+
+/* === Left Nav Activity Indicator === */
+.nav-activity {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: var(--radius);
+    font-size: 10px;
+    color: var(--amber);
+    font-weight: 600;
+}
+
+.activity-spinner {
+    width: 10px;
+    height: 10px;
+    border-width: 2px;
+    border-color: rgba(245, 158, 11, 0.3);
+    border-top-color: var(--amber);
+}
+
+.nav-activity-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* === Judge LLM Toggle Switch === */
+.judge-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.judge-toggle input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.judge-toggle-slider {
+    position: relative;
+    display: inline-block;
+    width: 30px;
+    height: 16px;
+    background: var(--border);
+    border-radius: 10px;
+    transition: background 0.2s;
+}
+
+.judge-toggle-slider::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s;
+}
+
+.judge-toggle input[type="checkbox"]:checked + .judge-toggle-slider {
+    background: var(--accent);
+}
+
+.judge-toggle input[type="checkbox"]:checked + .judge-toggle-slider::before {
+    transform: translateX(14px);
+}
+
+.judge-toggle-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* === New Project Checkbox === */
+.new-project-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 8px 0 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1.4;
+}
+
+.new-project-checkbox input[type="checkbox"] {
+    flex-shrink: 0;
+    margin-top: 2px;
+    accent-color: var(--accent);
+}
+
+/* === Summary Status Badge on Doc Cards === */
+.doc-summary-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    margin-left: 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+.doc-summary-badge.summary-done {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.doc-summary-badge.summary-running {
+    background: var(--amber-bg);
+    color: var(--amber);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.doc-summary-badge.summary-none {
+    background: rgba(148, 148, 160, 0.10);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+/* === Bulk Document Selection === */
+.bulk-action-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: var(--radius);
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+
+.bulk-select-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-right: auto;
+    cursor: pointer;
+    user-select: none;
+}
+
+.bulk-select-all input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+}
+
+.doc-card-checkbox {
+    display: flex;
+    align-items: center;
+    padding: 0 10px 0 4px;
+    cursor: pointer;
+}
+
+.doc-card-checkbox input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.doc-card.selected {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.06);
+}
+
+/* === Document Relevance Score Badge === */
+.doc-relevance-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin-left: 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    vertical-align: middle;
+}
+
+.doc-relevance-badge.relevance-high {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.doc-relevance-badge.relevance-med {
+    background: var(--amber-bg);
+    color: var(--amber);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.doc-relevance-badge.relevance-low {
+    background: rgba(148, 148, 160, 0.12);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+.doc-relevance-badge.relevance-pending {
+    background: rgba(99, 102, 241, 0.08);
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    font-style: italic;
+}
+
+.doc-relevance-label {
+    font-size: 8px;
+    opacity: 0.8;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    font-weight: 600;
+}
+
+.doc-relevance-value { font-size: 11px; }
+
+/* === Matrix Progress Banner === */
+.matrix-progress {
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 12px;
+}
+
+.matrix-progress-header {
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.matrix-progress-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.matrix-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.6s ease;
+}
+
+.matrix-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+/* === New Project Modal === */
+.new-project-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    margin-top: 4px;
+}
+
+.new-project-label-hint {
+    color: var(--text-muted);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 4px;
+}
+
+.new-project-input,
+.new-project-textarea {
+    width: 100%;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    margin-bottom: 12px;
+    transition: border-color 0.2s;
+}
+
+.new-project-input:focus,
+.new-project-textarea:focus { border-color: var(--accent); }
+
+.new-project-textarea {
+    resize: vertical;
+    min-height: 80px;
+    line-height: 1.5;
+}
+
+.new-project-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+}
 
 /* === Responsive === */
 @media (max-width: 1024px) {

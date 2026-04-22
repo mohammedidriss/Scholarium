@@ -1,4 +1,4 @@
-"""Flask web server for the Multi-Project Research Assistant."""
+"""Flask web server for Scholarium - Research Assistant (multi-project)."""
 
 import html as html_module
 import io
@@ -240,8 +240,21 @@ def restart_server():
 
 @app.route("/api/projects", methods=["GET"])
 def list_projects():
-    """List all projects."""
-    return jsonify(_load_projects())
+    """List all projects, enriched with live document_count."""
+    projects = _load_projects()
+    out = []
+    for p in projects:
+        entry = dict(p)
+        docs_dir = project_docs_dir(p["id"])
+        doc_count = 0
+        if os.path.isdir(docs_dir):
+            try:
+                doc_count = sum(1 for f in os.listdir(docs_dir) if f.lower().endswith(".pdf"))
+            except OSError:
+                pass
+        entry["document_count"] = doc_count
+        out.append(entry)
+    return jsonify(out)
 
 
 @app.route("/api/projects", methods=["POST"])
@@ -258,6 +271,7 @@ def create_project():
         "id": pid,
         "name": data["name"].strip(),
         "description": data.get("description", "").strip(),
+        "judge_enabled": bool(data.get("judge_enabled", True)),
         "created_at": now,
         "updated_at": now,
     }
@@ -278,12 +292,27 @@ def update_project(pid):
     projects = _load_projects()
     for p in projects:
         if p["id"] == pid:
+            description_changed = False
             if "name" in data:
                 p["name"] = data["name"].strip()
+                description_changed = True  # name changes also affect the semantic query
             if "description" in data:
+                if p.get("description") != data["description"].strip():
+                    description_changed = True
                 p["description"] = data["description"].strip()
+            if "judge_enabled" in data:
+                p["judge_enabled"] = bool(data["judge_enabled"])
             p["updated_at"] = datetime.now().isoformat()
             _save_projects(projects)
+
+            # If the description changed, recompute relevance for all docs in background
+            if description_changed:
+                docs_dir = project_docs_dir(pid)
+                if os.path.isdir(docs_dir):
+                    fnames = [f for f in os.listdir(docs_dir) if f.lower().endswith(".pdf")]
+                    if fnames:
+                        _trigger_relevance_score(pid, sorted(fnames))
+
             return jsonify(p)
     return jsonify({"error": "Project not found"}), 404
 
@@ -325,8 +354,18 @@ def project_query(pid):
         return jsonify({"error": "No question provided"}), 400
 
     question = data["question"].strip()
+    document_filename = (data.get("document_filename") or "").strip() or None
+
+    # If frontend didn't explicitly pass document_filename, try to detect one
+    # from a pattern like: "Regarding the document \"xyz.pdf\": ..."
+    if not document_filename:
+        m = re.match(r'^\s*Regarding the document ["\']([^"\']+\.pdf)["\']\s*:\s*(.*)$', question, re.DOTALL | re.IGNORECASE)
+        if m:
+            document_filename = m.group(1)
+            question = m.group(2).strip() or "Summarize the key points of this document."
+
     ev = get_evaluator(pid)
-    result = ev.process_query(question)
+    result = ev.process_query(question, document_filename=document_filename)
     return jsonify(result)
 
 
@@ -395,10 +434,15 @@ def project_upload(pid):
 
     ev = get_evaluator(pid)
     chunks_added = ev.index_single_document(filepath)
+
+    # Auto-trigger summarization + matrix entry in background (non-blocking)
+    _auto_process_uploaded_doc(pid, filename)
+
     return jsonify({
         "success": True,
         "filename": filename,
         "chunks_added": chunks_added,
+        "auto_processing": True,
         "message": f"Indexed {filename}: {chunks_added} chunks added"
             if chunks_added > 0
             else f"{filename} was already indexed",
@@ -443,6 +487,15 @@ def project_list_documents(pid):
     if not os.path.isdir(docs_dir):
         return jsonify([])
 
+    # Load relevance + summaries once
+    relevance_data = _load_json(project_path(pid, "relevance.json"), default={"scores": {}})
+    scores_map = relevance_data.get("scores", {})
+    summaries_map = _load_json(project_path(pid, "summaries.json"), default={})
+    # Check which summaries / relevance jobs are currently running
+    running_jobs = _list_jobs(pid, running_only=True)
+    summarizing = {j["target"] for j in running_jobs if j.get("type") == "summarize"}
+    relevance_running = any(j.get("type") == "relevance" for j in running_jobs)
+
     docs = []
     for fname in sorted(os.listdir(docs_dir)):
         if not fname.lower().endswith(".pdf"):
@@ -460,14 +513,44 @@ def project_list_documents(pid):
         except Exception:
             pass
         reading_min = max(1, round(word_count / 250))
-        docs.append({
+        doc_entry = {
             "filename": fname,
             "size_bytes": size,
             "size_display": f"{size / 1024:.0f} KB" if size < 1048576 else f"{size / 1048576:.1f} MB",
             "pages": pages,
             "word_count": word_count,
             "reading_time": f"{reading_min} min read",
-        })
+        }
+        # Attach relevance score status
+        rel = scores_map.get(fname)
+        if rel:
+            doc_entry["relevance_score"] = rel.get("score")
+            doc_entry["relevance_cosine"] = rel.get("cosine")
+            doc_entry["relevance_status"] = "done"
+        elif relevance_running:
+            doc_entry["relevance_status"] = "running"
+        else:
+            doc_entry["relevance_status"] = "pending"
+        # Attach summary status
+        if fname in summarizing:
+            doc_entry["summary_status"] = "running"
+        elif fname in summaries_map:
+            doc_entry["summary_status"] = "done"
+        else:
+            doc_entry["summary_status"] = "none"
+        docs.append(doc_entry)
+
+    # Auto-trigger relevance scoring for any docs that don't have a score yet
+    # (unless a job is already running)
+    if not relevance_running:
+        unscored = [d["filename"] for d in docs if d.get("relevance_status") == "pending"]
+        if unscored:
+            _trigger_relevance_score(pid, unscored)
+            # Update status for these in the response so UI shows "running"
+            for d in docs:
+                if d.get("relevance_status") == "pending":
+                    d["relevance_status"] = "running"
+
     return jsonify(docs)
 
 
@@ -506,14 +589,18 @@ def project_document_download(pid, filename):
 
 @app.route("/api/projects/<pid>/documents/<filename>", methods=["DELETE"])
 def project_delete_document(pid, filename):
-    """Delete a document and re-index the project."""
+    """Delete a document, purge its sidecar data (summary, matrix, etc.), and re-index."""
     if not _get_project(pid):
         return jsonify({"error": "Project not found"}), 404
 
-    fpath = os.path.join(project_docs_dir(pid), secure_filename(filename))
+    safe = secure_filename(filename)
+    fpath = os.path.join(project_docs_dir(pid), safe)
     if not os.path.exists(fpath):
         return jsonify({"error": "Document not found"}), 404
     os.remove(fpath)
+
+    # Purge this document's data from all sidecar files
+    _purge_doc_sidecars(pid, [safe])
 
     ev = get_evaluator(pid)
     ev.rag.clear_index()
@@ -521,40 +608,111 @@ def project_delete_document(pid, filename):
     return jsonify({"success": True, "message": f"Deleted {filename} and re-indexed"})
 
 
-# --- Summaries ---
+def _purge_doc_sidecars(pid: str, filenames: list[str]):
+    """Remove entries for the given filenames from all per-document JSON sidecars."""
+    if not filenames:
+        return
+    fn_set = set(filenames)
+    # Filename-keyed dicts
+    for sidecar in ("summaries.json", "reading_status.json", "highlights.json", "citations.json"):
+        path = project_path(pid, sidecar)
+        if not os.path.exists(path):
+            continue
+        try:
+            data_obj = _load_json(path, default={})
+            if isinstance(data_obj, dict):
+                for fn in fn_set:
+                    data_obj.pop(fn, None)
+                _save_json(path, data_obj)
+        except Exception:
+            pass
+    # Relevance has nested "scores"
+    rel_path = project_path(pid, "relevance.json")
+    if os.path.exists(rel_path):
+        try:
+            rel = _load_json(rel_path, default={"scores": {}})
+            scores = rel.get("scores", {})
+            for fn in fn_set:
+                scores.pop(fn, None)
+            _save_json(rel_path, rel)
+        except Exception:
+            pass
+    # Literature matrix has an entries list
+    m_path = project_path(pid, "literature_matrix.json")
+    if os.path.exists(m_path):
+        try:
+            matrix = _load_json(m_path, default={"entries": []})
+            matrix["entries"] = [e for e in matrix.get("entries", []) if e.get("filename") not in fn_set]
+            _save_json(m_path, matrix)
+        except Exception:
+            pass
 
-@app.route("/api/projects/<pid>/documents/<filename>/summarize", methods=["POST"])
-def project_summarize_document(pid, filename):
-    """Generate a summary + key findings for a document using the respondent LLM."""
+
+@app.route("/api/projects/<pid>/documents/bulk-delete", methods=["POST"])
+def project_bulk_delete_documents(pid):
+    """Delete multiple documents in one pass (single re-index at the end)."""
     if not _get_project(pid):
         return jsonify({"error": "Project not found"}), 404
 
+    data = request.get_json() or {}
+    filenames = data.get("filenames", [])
+    if not isinstance(filenames, list) or not filenames:
+        return jsonify({"error": "filenames list required"}), 400
+
+    docs_dir = project_docs_dir(pid)
+    deleted = []
+    errors = []
+    for raw_name in filenames:
+        safe = secure_filename(raw_name or "")
+        if not safe:
+            errors.append({"filename": raw_name, "error": "Invalid filename"})
+            continue
+        fpath = os.path.join(docs_dir, safe)
+        if not os.path.exists(fpath):
+            errors.append({"filename": safe, "error": "Not found"})
+            continue
+        try:
+            os.remove(fpath)
+            deleted.append(safe)
+        except OSError as e:
+            errors.append({"filename": safe, "error": str(e)})
+
+    # Purge per-document data from all sidecar files (summaries, matrix, etc.)
+    _purge_doc_sidecars(pid, deleted)
+
+    # Single re-index at the end
+    ev = get_evaluator(pid)
+    ev.rag.clear_index()
+    ev.index_documents()
+
+    return jsonify({
+        "success": True,
+        "deleted": deleted,
+        "errors": errors,
+        "message": f"Deleted {len(deleted)} document(s){f', {len(errors)} errors' if errors else ''} and re-indexed.",
+    })
+
+
+# --- Summaries ---
+
+def _do_summarize_document(pid: str, filename: str) -> dict:
+    """Synchronous core summarization logic. Returns the summary dict or raises."""
     import fitz
     import requests as req
+    from respondent import MODEL, OLLAMA_URL
 
     fpath = os.path.join(project_docs_dir(pid), secure_filename(filename))
     if not os.path.exists(fpath):
-        return jsonify({"error": "Document not found"}), 404
+        raise FileNotFoundError(f"Document not found: {filename}")
 
-    # Check cache
-    force = request.args.get("force", "").lower() == "true"
-    summaries_path = project_path(pid, "summaries.json")
-    summaries = _load_json(summaries_path, default={})
-    if filename in summaries and not force:
-        return jsonify(summaries[filename])
-
-    # Extract first ~4 pages of text
-    try:
-        doc = fitz.open(fpath)
-        text = ""
-        for i, page in enumerate(doc):
-            if i >= 4:
-                break
-            text += page.get_text()
-        doc.close()
-    except Exception as e:
-        return jsonify({"error": f"Failed to read PDF: {e}"}), 500
-
+    # Extract first ~4 pages
+    doc = fitz.open(fpath)
+    text = ""
+    for i, page in enumerate(doc):
+        if i >= 4:
+            break
+        text += page.get_text()
+    doc.close()
     text = text[:8000]
 
     prompt = (
@@ -569,62 +727,376 @@ def project_summarize_document(pid, filename):
         f"--- DOCUMENT TEXT ---\n{text}"
     )
 
+    response = req.post(
+        OLLAMA_URL,
+        json={
+            "model": MODEL,
+            "prompt": prompt,
+            "system": "You are an academic paper analyst. Provide structured analysis.",
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 1024},
+        },
+        timeout=300,
+    )
+    response.raise_for_status()
+    raw = response.json().get("response", "").strip()
+
+    result = {
+        "filename": filename,
+        "raw": raw,
+        "summary": "",
+        "key_findings": [],
+        "methodology": "",
+        "generated_at": datetime.now().isoformat(),
+    }
+
+    current = ""
+    for line in raw.split("\n"):
+        if line.strip().upper().startswith("SUMMARY"):
+            current = "summary"; continue
+        elif line.strip().upper().startswith("KEY FINDINGS"):
+            current = "findings"; continue
+        elif line.strip().upper().startswith("METHODOLOGY"):
+            current = "methodology"; continue
+
+        if current == "summary":
+            result["summary"] += line + " "
+        elif current == "findings" and line.strip().startswith("-"):
+            result["key_findings"].append(line.strip()[1:].strip())
+        elif current == "methodology":
+            result["methodology"] += line + " "
+
+    result["summary"] = result["summary"].strip()
+    result["methodology"] = result["methodology"].strip()
+    if not result["summary"]:
+        result["summary"] = raw[:500]
+
+    summaries_path = project_path(pid, "summaries.json")
+    summaries = _load_json(summaries_path, default={})
+    summaries[filename] = result
+    _save_json(summaries_path, summaries)
+    return result
+
+
+def _summarize_worker(pid: str, filename: str, job_id: str):
+    """Background worker for summarization."""
     try:
-        from respondent import MODEL, OLLAMA_URL
+        _do_summarize_document(pid, filename)
+        _finish_job(pid, job_id)
+    except Exception as e:
+        _finish_job(pid, job_id, error=str(e))
+
+
+def _do_matrix_entry(pid: str, filename: str) -> dict | None:
+    """Generate a single matrix entry for a document and append to literature_matrix.json.
+    Returns the entry or None on failure."""
+    import fitz
+    import requests as req
+    from respondent import MODEL, OLLAMA_URL
+
+    fpath = os.path.join(project_docs_dir(pid), secure_filename(filename))
+    if not os.path.exists(fpath):
+        return None
+
+    # Check if already in matrix
+    m_path = project_path(pid, "literature_matrix.json")
+    matrix = _load_json(m_path, default={"generated_at": None, "entries": []})
+    if any(e.get("filename") == filename for e in matrix["entries"]):
+        return None
+
+    try:
+        doc = fitz.open(fpath)
+        text = ""
+        for i, page in enumerate(doc):
+            if i >= 4:
+                break
+            text += page.get_text()
+        doc.close()
+        text = text[:8000]
+    except Exception:
+        return None
+
+    prompt = (
+        "Extract the following metadata from this academic paper text. "
+        "Respond in JSON format with these exact keys: "
+        "title (string), year (string), methodology (string, brief description of research method), "
+        "findings (string, key findings summary), sample_size (string, e.g. 'N=150' or 'N/A' if not applicable).\n\n"
+        f"--- DOCUMENT TEXT ---\n{text}"
+    )
+
+    try:
         response = req.post(
             OLLAMA_URL,
             json={
                 "model": MODEL,
                 "prompt": prompt,
-                "system": "You are an academic paper analyst. Provide structured analysis.",
+                "system": "You are an academic paper metadata extractor. Return valid JSON only.",
                 "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 1024},
+                "options": {"temperature": 0.1, "num_predict": 512},
             },
-            timeout=300,
+            timeout=180,
         )
         response.raise_for_status()
         raw = response.json().get("response", "").strip()
 
-        result = {
+        json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+        metadata = json.loads(json_match.group()) if json_match else json.loads(raw)
+
+        entry = {
             "filename": filename,
-            "raw": raw,
-            "summary": "",
-            "key_findings": [],
-            "methodology": "",
-            "generated_at": datetime.now().isoformat(),
+            "title": metadata.get("title", ""),
+            "year": str(metadata.get("year", "")),
+            "methodology": metadata.get("methodology", ""),
+            "findings": metadata.get("findings", ""),
+            "sample_size": metadata.get("sample_size", ""),
         }
 
-        current = ""
-        for line in raw.split("\n"):
-            if line.strip().upper().startswith("SUMMARY"):
-                current = "summary"
-                continue
-            elif line.strip().upper().startswith("KEY FINDINGS"):
-                current = "findings"
-                continue
-            elif line.strip().upper().startswith("METHODOLOGY"):
-                current = "methodology"
-                continue
+        # Persist
+        matrix = _load_json(m_path, default={"generated_at": None, "entries": []})
+        if not any(e.get("filename") == filename for e in matrix["entries"]):
+            matrix["entries"].append(entry)
+        matrix["generated_at"] = datetime.now().isoformat()
+        _save_json(m_path, matrix)
+        return entry
+    except Exception:
+        return None
 
-            if current == "summary":
-                result["summary"] += line + " "
-            elif current == "findings" and line.strip().startswith("-"):
-                result["key_findings"].append(line.strip()[1:].strip())
-            elif current == "methodology":
-                result["methodology"] += line + " "
 
-        result["summary"] = result["summary"].strip()
-        result["methodology"] = result["methodology"].strip()
-        if not result["summary"]:
-            result["summary"] = raw[:500]
-
-        summaries[filename] = result
-        _save_json(summaries_path, summaries)
-
-        return jsonify(result)
-
+def _matrix_entry_worker(pid: str, filename: str, job_id: str):
+    """Background worker for a single matrix entry."""
+    try:
+        _do_matrix_entry(pid, filename)
+        _finish_job(pid, job_id)
     except Exception as e:
-        return jsonify({"error": f"Summarization failed: {str(e)}"}), 500
+        _finish_job(pid, job_id, error=str(e))
+
+
+# --- Document Relevance Scoring ---
+
+def _cosine_similarity(v1, v2):
+    """Cosine similarity between two vectors (list of floats)."""
+    import math
+    dot = sum(a * b for a, b in zip(v1, v2))
+    n1 = math.sqrt(sum(a * a for a in v1))
+    n2 = math.sqrt(sum(b * b for b in v2))
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    return dot / (n1 * n2)
+
+
+def _get_project_description_embedding(pid: str):
+    """Compute (or return cached) embedding of the project's description + keywords.
+    Returns (embedding_list, description_text) or (None, '') if no description."""
+    project = _get_project(pid)
+    if not project:
+        return None, ""
+    desc = (project.get("description") or "").strip()
+    name = (project.get("name") or "").strip()
+    # Use both name and description for richer context
+    query_text = f"{name}. {desc}" if desc else name
+    if not query_text.strip():
+        return None, ""
+
+    from rag_pipeline import get_embedder
+    embedder = get_embedder()
+    emb = embedder.encode([query_text])[0].tolist()
+    return emb, query_text
+
+
+def _compute_doc_relevance(pid: str, filename: str) -> dict | None:
+    """Compute relevance score (0-100) for a single document against the project description.
+    Uses the average embedding of the doc's first ~8 chunks (title + abstract region)."""
+    proj_emb, query_text = _get_project_description_embedding(pid)
+    if proj_emb is None:
+        return None
+
+    from rag_pipeline import get_embedder
+    embedder = get_embedder()
+
+    # Load chunks for this file directly from the ChromaDB collection
+    ev = get_evaluator(pid)
+    try:
+        result = ev.rag.collection.get(
+            where={"source": filename},
+            include=["documents", "embeddings", "metadatas"],
+        )
+    except Exception:
+        return None
+
+    documents = result.get("documents")
+    embeddings = result.get("embeddings")
+    metadatas = result.get("metadatas")
+
+    # ChromaDB may return numpy arrays — check length explicitly
+    n_docs = len(documents) if documents is not None else 0
+    n_embs = len(embeddings) if embeddings is not None else 0
+    if n_docs == 0 or n_embs == 0:
+        return None
+
+    # Build (embedding, metadata) pairs and sort by chunk_index
+    pairs = []
+    for i in range(n_embs):
+        emb = embeddings[i]
+        meta = metadatas[i] if (metadatas is not None and i < len(metadatas)) else {}
+        pairs.append((emb, meta or {}))
+    pairs.sort(key=lambda p: (p[1] or {}).get("chunk_index", 0))
+
+    # Take first 8 chunks (title + abstract + intro) — most representative
+    head_embs = []
+    for e, _m in pairs[:8]:
+        if e is not None:
+            # Convert numpy array to list for consistent math
+            head_embs.append(list(e) if hasattr(e, "__iter__") else e)
+    if not head_embs:
+        return None
+
+    # Average embedding (element-wise mean)
+    dim = len(head_embs[0])
+    avg = [sum(float(e[i]) for e in head_embs) / len(head_embs) for i in range(dim)]
+
+    similarity = _cosine_similarity(proj_emb, avg)
+    # Map cosine (-1..1) → 0..100 (clamp negatives to 0 for intuitive UI)
+    score = max(0.0, min(1.0, similarity)) * 100
+
+    # Best matching chunk score (for "why this score?" analysis)
+    chunk_scores = [_cosine_similarity(proj_emb, e) for e in head_embs]
+    best_idx = chunk_scores.index(max(chunk_scores)) if chunk_scores else 0
+
+    return {
+        "filename": filename,
+        "score": round(score, 1),
+        "cosine": round(similarity, 4),
+        "description_used": query_text[:200],
+        "computed_at": datetime.now().isoformat(),
+    }
+
+
+def _relevance_worker(pid: str, filenames: list, job_id: str):
+    """Background worker: compute relevance for given filenames, save to relevance.json."""
+    try:
+        rel_path = project_path(pid, "relevance.json")
+        data = _load_json(rel_path, default={"scores": {}, "description_at": None})
+
+        project = _get_project(pid)
+        desc = (project.get("description") or "").strip() if project else ""
+        desc_hash = str(hash(desc)) if desc else ""
+
+        for fname in filenames:
+            entry = _compute_doc_relevance(pid, fname)
+            if entry:
+                data["scores"][fname] = entry
+
+        data["description_hash"] = desc_hash
+        data["updated_at"] = datetime.now().isoformat()
+        _save_json(rel_path, data)
+        _finish_job(pid, job_id)
+    except Exception as e:
+        _finish_job(pid, job_id, error=str(e))
+
+
+def _trigger_relevance_score(pid: str, filenames: list):
+    """Kick off relevance scoring for a list of filenames in the background."""
+    if not filenames:
+        return
+    job_id = f"relevance:{datetime.now().strftime('%H%M%S')}"
+    _add_job(pid, job_id, "relevance", f"{len(filenames)} doc(s)")
+    threading.Thread(
+        target=_relevance_worker,
+        args=(pid, filenames, job_id),
+        daemon=True,
+    ).start()
+
+
+@app.route("/api/projects/<pid>/relevance", methods=["GET"])
+def project_get_relevance(pid):
+    """Return the relevance scores for all documents in a project."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    data = _load_json(project_path(pid, "relevance.json"), default={"scores": {}})
+    return jsonify(data)
+
+
+@app.route("/api/projects/<pid>/relevance/recompute", methods=["POST"])
+def project_recompute_relevance(pid):
+    """Recompute relevance scores for all documents in the project."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    docs_dir = project_docs_dir(pid)
+    if not os.path.isdir(docs_dir):
+        return jsonify({"scores": {}, "message": "No documents."})
+
+    filenames = sorted([f for f in os.listdir(docs_dir) if f.lower().endswith(".pdf")])
+    if not filenames:
+        return jsonify({"scores": {}, "message": "No documents."})
+
+    _trigger_relevance_score(pid, filenames)
+    return jsonify({
+        "message": f"Relevance scoring started for {len(filenames)} document(s).",
+        "count": len(filenames),
+    }), 202
+
+
+def _auto_process_uploaded_doc(pid: str, filename: str):
+    """Kick off summarize + matrix entry + relevance scoring in background for a newly-uploaded doc."""
+    sum_job_id = f"summarize:{filename}"
+    if not _job_exists_running(pid, sum_job_id):
+        summaries = _load_json(project_path(pid, "summaries.json"), default={})
+        if filename not in summaries:
+            _add_job(pid, sum_job_id, "summarize", filename)
+            threading.Thread(
+                target=_summarize_worker,
+                args=(pid, filename, sum_job_id),
+                daemon=True,
+            ).start()
+
+    matrix_job_id = f"matrix_entry:{filename}"
+    if not _job_exists_running(pid, matrix_job_id):
+        matrix = _load_json(project_path(pid, "literature_matrix.json"), default={"generated_at": None, "entries": []})
+        if not any(e.get("filename") == filename for e in matrix["entries"]):
+            _add_job(pid, matrix_job_id, "matrix_entry", filename)
+            threading.Thread(
+                target=_matrix_entry_worker,
+                args=(pid, filename, matrix_job_id),
+                daemon=True,
+            ).start()
+
+    # Relevance scoring for this single file
+    _trigger_relevance_score(pid, [filename])
+
+
+@app.route("/api/projects/<pid>/documents/<filename>/summarize", methods=["POST"])
+def project_summarize_document(pid, filename):
+    """Trigger background summarization. Returns immediately (202).
+    Poll GET /summaries or GET /jobs to check completion."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    fpath = os.path.join(project_docs_dir(pid), secure_filename(filename))
+    if not os.path.exists(fpath):
+        return jsonify({"error": "Document not found"}), 404
+
+    force = request.args.get("force", "").lower() == "true"
+    summaries_path = project_path(pid, "summaries.json")
+    summaries = _load_json(summaries_path, default={})
+
+    # Cached and not forced → return immediately
+    if filename in summaries and not force:
+        return jsonify({"cached": True, **summaries[filename]})
+
+    # If a job is already running for this file, just report it
+    job_id = f"summarize:{filename}"
+    if _job_exists_running(pid, job_id):
+        return jsonify({"status": "already_running", "job_id": job_id}), 202
+
+    # Start background job
+    _add_job(pid, job_id, "summarize", filename)
+    threading.Thread(
+        target=_summarize_worker,
+        args=(pid, filename, job_id),
+        daemon=True,
+    ).start()
+    return jsonify({"status": "started", "job_id": job_id, "target": filename}), 202
 
 
 @app.route("/api/projects/<pid>/summaries", methods=["GET"])
@@ -1957,26 +2429,230 @@ def project_update_journal(pid, jid):
     return jsonify({"error": "Journal entry not found"}), 404
 
 
-# --- Literature Matrix ---
+# --- Literature Matrix (background-worker based) ---
+
+# In-memory job tracker for matrix generation jobs (keyed by project id)
+# Each entry: {"running": bool, "total": N, "done": M, "errors": [], "started_at": ISO, "finished_at": ISO|None}
+_matrix_jobs: dict[str, dict] = {}
+_matrix_jobs_lock = threading.Lock()
+
+# Generic job registry for all long-running background tasks.
+# Keyed by project id, then by job id.
+#   type ∈ {"summarize", "citation", "matrix_entry"}
+#   status ∈ {"running", "done", "error"}
+_jobs: dict[str, dict[str, dict]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _add_job(pid: str, job_id: str, job_type: str, target: str):
+    with _jobs_lock:
+        _jobs.setdefault(pid, {})[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "target": target,
+            "status": "running",
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "error": None,
+        }
+
+
+def _finish_job(pid: str, job_id: str, error: str | None = None):
+    with _jobs_lock:
+        job = _jobs.get(pid, {}).get(job_id)
+        if job:
+            job["status"] = "error" if error else "done"
+            job["finished_at"] = datetime.now().isoformat()
+            if error:
+                job["error"] = str(error)
+
+
+def _list_jobs(pid: str, running_only: bool = False) -> list[dict]:
+    """Return jobs for a project. Removes finished jobs older than 60s."""
+    cutoff = (datetime.now() - timedelta(seconds=60)).isoformat()
+    with _jobs_lock:
+        project_jobs = _jobs.get(pid, {})
+        # Prune old finished jobs
+        stale_ids = [
+            jid for jid, j in project_jobs.items()
+            if j["status"] != "running" and (j.get("finished_at") or "") < cutoff
+        ]
+        for jid in stale_ids:
+            project_jobs.pop(jid, None)
+        out = list(project_jobs.values())
+    if running_only:
+        out = [j for j in out if j["status"] == "running"]
+    return out
+
+
+def _job_exists_running(pid: str, job_id: str) -> bool:
+    with _jobs_lock:
+        job = _jobs.get(pid, {}).get(job_id)
+        return bool(job and job["status"] == "running")
+
+
+def _matrix_worker(pid: str, docs_to_process: list):
+    """Background thread — processes each doc and appends to matrix file as it goes."""
+    import fitz
+    import requests as req
+    from respondent import MODEL, OLLAMA_URL
+
+    m_path = project_path(pid, "literature_matrix.json")
+    docs_dir = project_docs_dir(pid)
+
+    for fname in docs_to_process:
+        fpath = os.path.join(docs_dir, fname)
+
+        entry = None
+        error = None
+
+        try:
+            doc = fitz.open(fpath)
+            text = ""
+            for i, page in enumerate(doc):
+                if i >= 4:
+                    break
+                text += page.get_text()
+            doc.close()
+            text = text[:8000]
+
+            prompt = (
+                "Extract the following metadata from this academic paper text. "
+                "Respond in JSON format with these exact keys: "
+                "title (string), year (string), methodology (string, brief description of research method), "
+                "findings (string, key findings summary), sample_size (string, e.g. 'N=150' or 'N/A' if not applicable).\n\n"
+                f"--- DOCUMENT TEXT ---\n{text}"
+            )
+
+            response = req.post(
+                OLLAMA_URL,
+                json={
+                    "model": MODEL,
+                    "prompt": prompt,
+                    "system": "You are an academic paper metadata extractor. Return valid JSON only.",
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 512},
+                },
+                timeout=180,
+            )
+            response.raise_for_status()
+            raw = response.json().get("response", "").strip()
+
+            json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+            if json_match:
+                metadata = json.loads(json_match.group())
+            else:
+                metadata = json.loads(raw)
+
+            entry = {
+                "filename": fname,
+                "title": metadata.get("title", ""),
+                "year": str(metadata.get("year", "")),
+                "methodology": metadata.get("methodology", ""),
+                "findings": metadata.get("findings", ""),
+                "sample_size": metadata.get("sample_size", ""),
+            }
+        except Exception as e:
+            error = {"filename": fname, "error": str(e)}
+
+        # Persist this iteration's result immediately
+        matrix = _load_json(m_path, default={"generated_at": None, "entries": []})
+        if entry:
+            # Skip duplicates in case of overlapping runs
+            if not any(e.get("filename") == fname for e in matrix["entries"]):
+                matrix["entries"].append(entry)
+        matrix["generated_at"] = datetime.now().isoformat()
+        _save_json(m_path, matrix)
+
+        with _matrix_jobs_lock:
+            job = _matrix_jobs.get(pid)
+            if job:
+                job["done"] += 1
+                if error:
+                    job["errors"].append(error)
+                job["current"] = fname
+
+    # Mark job finished
+    with _matrix_jobs_lock:
+        job = _matrix_jobs.get(pid)
+        if job:
+            job["running"] = False
+            job["finished_at"] = datetime.now().isoformat()
+            job["current"] = None
+
 
 @app.route("/api/projects/<pid>/matrix", methods=["GET"])
 def project_get_matrix(pid):
-    """Return the cached literature matrix for a project."""
+    """Return the cached literature matrix for a project, with relevance scores merged in."""
     if not _get_project(pid):
         return jsonify({"error": "Project not found"}), 404
 
     m_path = project_path(pid, "literature_matrix.json")
-    return jsonify(_load_json(m_path, default={"generated_at": None, "entries": []}))
+    matrix = _load_json(m_path, default={"generated_at": None, "entries": []})
+
+    # Merge relevance scores into each entry
+    relevance_data = _load_json(project_path(pid, "relevance.json"), default={"scores": {}})
+    scores_map = relevance_data.get("scores", {})
+    for entry in matrix.get("entries", []):
+        rel = scores_map.get(entry.get("filename"))
+        if rel:
+            entry["relevance_score"] = rel.get("score")
+
+    return jsonify(matrix)
+
+
+@app.route("/api/projects/<pid>/jobs", methods=["GET"])
+def project_list_jobs(pid):
+    """Return all background jobs for a project (summarize / matrix_entry / etc.).
+    By default shows running + recently-finished jobs (last 60s)."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+    running_only = request.args.get("running", "").lower() == "true"
+    return jsonify(_list_jobs(pid, running_only=running_only))
+
+
+@app.route("/api/projects/<pid>/matrix/status", methods=["GET"])
+def project_matrix_status(pid):
+    """Return the current matrix generation job status for a project."""
+    if not _get_project(pid):
+        return jsonify({"error": "Project not found"}), 404
+
+    with _matrix_jobs_lock:
+        job = _matrix_jobs.get(pid)
+        if not job:
+            return jsonify({"running": False, "total": 0, "done": 0, "errors": [], "current": None})
+        # Return a copy
+        return jsonify({
+            "running": job.get("running", False),
+            "total": job.get("total", 0),
+            "done": job.get("done", 0),
+            "errors": list(job.get("errors", [])),
+            "current": job.get("current"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+        })
 
 
 @app.route("/api/projects/<pid>/matrix/generate", methods=["POST"])
 def project_generate_matrix(pid):
-    """Generate literature matrix entries for documents not yet analyzed."""
+    """Kick off background matrix generation for docs not already in the matrix.
+    Returns immediately; poll /matrix/status and /matrix for progress + results."""
     if not _get_project(pid):
         return jsonify({"error": "Project not found"}), 404
 
-    import fitz
-    import requests as req
+    # Don't start a second job for this project
+    with _matrix_jobs_lock:
+        current_job = _matrix_jobs.get(pid)
+        if current_job and current_job.get("running"):
+            return jsonify({
+                "message": "Generation already running.",
+                "status": {
+                    "running": True,
+                    "total": current_job.get("total", 0),
+                    "done": current_job.get("done", 0),
+                    "current": current_job.get("current"),
+                },
+            }), 202
 
     m_path = project_path(pid, "literature_matrix.json")
     matrix = _load_json(m_path, default={"generated_at": None, "entries": []})
@@ -1992,82 +2668,37 @@ def project_generate_matrix(pid):
                 docs_to_process.append(fname)
 
     if not docs_to_process:
-        return jsonify({"message": "All documents already in matrix.", "matrix": matrix})
+        return jsonify({"message": "All documents already in matrix.", "status": {"running": False, "total": 0, "done": 0}})
 
-    from respondent import MODEL, OLLAMA_URL
-    new_entries = []
-    errors = []
+    # Initialize job state
+    with _matrix_jobs_lock:
+        _matrix_jobs[pid] = {
+            "running": True,
+            "total": len(docs_to_process),
+            "done": 0,
+            "errors": [],
+            "current": docs_to_process[0] if docs_to_process else None,
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+        }
 
-    for fname in docs_to_process:
-        fpath = os.path.join(docs_dir, fname)
-
-        try:
-            doc = fitz.open(fpath)
-            text = ""
-            for i, page in enumerate(doc):
-                if i >= 4:
-                    break
-                text += page.get_text()
-            doc.close()
-        except Exception as e:
-            errors.append({"filename": fname, "error": f"Failed to read PDF: {e}"})
-            continue
-
-        text = text[:8000]
-
-        prompt = (
-            "Extract the following metadata from this academic paper text. "
-            "Respond in JSON format with these exact keys: "
-            "title (string), year (string), methodology (string, brief description of research method), "
-            "findings (string, key findings summary), sample_size (string, e.g. 'N=150' or 'N/A' if not applicable).\n\n"
-            f"--- DOCUMENT TEXT ---\n{text}"
-        )
-
-        try:
-            response = req.post(
-                OLLAMA_URL,
-                json={
-                    "model": MODEL,
-                    "prompt": prompt,
-                    "system": "You are an academic paper metadata extractor. Return valid JSON only.",
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 512},
-                },
-                timeout=180,
-            )
-            response.raise_for_status()
-            raw = response.json().get("response", "").strip()
-
-            import re
-            json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
-            if json_match:
-                metadata = json.loads(json_match.group())
-            else:
-                metadata = json.loads(raw)
-
-            entry = {
-                "filename": fname,
-                "title": metadata.get("title", ""),
-                "year": str(metadata.get("year", "")),
-                "methodology": metadata.get("methodology", ""),
-                "findings": metadata.get("findings", ""),
-                "sample_size": metadata.get("sample_size", ""),
-            }
-            new_entries.append(entry)
-
-        except Exception as e:
-            errors.append({"filename": fname, "error": str(e)})
-
-    matrix["entries"].extend(new_entries)
-    matrix["generated_at"] = datetime.now().isoformat()
-    _save_json(m_path, matrix)
+    # Spawn background thread (daemon=True so it dies with the server)
+    t = threading.Thread(
+        target=_matrix_worker,
+        args=(pid, docs_to_process),
+        daemon=True,
+    )
+    t.start()
 
     return jsonify({
-        "message": f"Processed {len(new_entries)} documents, {len(errors)} errors.",
-        "new_entries": new_entries,
-        "errors": errors,
-        "matrix": matrix,
-    })
+        "message": f"Generation started for {len(docs_to_process)} document(s). Poll /matrix/status for progress.",
+        "status": {
+            "running": True,
+            "total": len(docs_to_process),
+            "done": 0,
+            "current": docs_to_process[0],
+        },
+    }), 202
 
 
 # --- Answer Export ---
@@ -2177,7 +2808,7 @@ def _export_answer_pdf(question, answer, scores, model, timestamp):
 
     # Title
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Research Assistant - Q&A Export", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "Scholarium - Research Assistant - Q&A Export", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
     # Metadata
@@ -2234,7 +2865,7 @@ def _export_answer_docx(question, answer, scores, model, timestamp):
     from docx.shared import Pt, RGBColor
 
     doc = Document()
-    doc.add_heading("Research Assistant - Q&A Export", level=1)
+    doc.add_heading("Scholarium - Research Assistant - Q&A Export", level=1)
 
     # Metadata
     if timestamp or model:
@@ -2318,8 +2949,9 @@ if __name__ == "__main__":
     if not projects:
         print("\n  No projects found. Create one via the web UI.\n")
 
-    # Open browser in background thread
-    threading.Thread(target=open_browser, daemon=True).start()
+    # Open browser in background thread (skip when running in Docker / headless)
+    if not os.environ.get("SCHOLARIUM_NO_BROWSER"):
+        threading.Thread(target=open_browser, daemon=True).start()
 
     print("Starting server at http://localhost:8080")
     app.run(host="0.0.0.0", port=8080, debug=False)

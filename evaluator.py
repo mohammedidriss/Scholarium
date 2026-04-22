@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 from rag_pipeline import RAGPipeline
-from respondent import generate_answer
+from respondent import generate_answer, generate_answer_full_doc
 from judge import evaluate_answer
 
 PROJECTS_DIR = os.path.join(os.path.dirname(__file__), "projects")
@@ -50,12 +50,75 @@ class Evaluator:
     def index_single_document(self, filepath: str) -> int:
         return self.rag.index_document(filepath)
 
-    def process_query(self, question: str) -> dict:
-        timestamp = datetime.now().isoformat()
-        chunks = self.rag.retrieve(question)
-        respondent_result = generate_answer(question, chunks)
+    def _project_setting(self, key, default=None):
+        """Load a per-project setting from projects/projects.json."""
+        projects_file = os.path.join(PROJECTS_DIR, "projects.json")
+        try:
+            with open(projects_file, "r") as f:
+                for p in json.load(f):
+                    if p.get("id") == self.project_id:
+                        return p.get(key, default)
+        except Exception:
+            pass
+        return default
 
-        if respondent_result["success"] and respondent_result["answer"]:
+    def process_query(
+        self,
+        question: str,
+        judge_enabled: bool | None = None,
+        document_filename: str | None = None,
+    ) -> dict:
+        """Process a query. If document_filename is provided, use full-document
+        context mode (no RAG) — send the entire document text to the LLM."""
+        timestamp = datetime.now().isoformat()
+
+        if document_filename:
+            # Full-document mode — bypass RAG
+            import fitz
+            doc_path = os.path.join(self.rag.documents_dir, document_filename)
+            full_text = ""
+            source_ok = False
+            if os.path.exists(doc_path):
+                try:
+                    doc = fitz.open(doc_path)
+                    for page in doc:
+                        full_text += page.get_text() + "\n"
+                    doc.close()
+                    source_ok = True
+                except Exception as e:
+                    respondent_result = {
+                        "answer": "", "model": "", "success": False,
+                        "error": f"Failed to read document: {e}",
+                    }
+
+            if source_ok:
+                respondent_result = generate_answer_full_doc(question, document_filename, full_text)
+
+            # Synthetic "chunks" record (just the filename) for UI display
+            chunks = [{
+                "id": "fulldoc:" + document_filename,
+                "text": f"[Full document used: {document_filename}]",
+                "source": document_filename,
+                "chunk_index": 0,
+                "distance": 0.0,
+            }]
+        else:
+            chunks = self.rag.retrieve(question)
+            respondent_result = generate_answer(question, chunks)
+
+        # Resolve judge flag: explicit arg > project setting > default True
+        if judge_enabled is None:
+            judge_enabled = self._project_setting("judge_enabled", True)
+
+        if not judge_enabled:
+            # Judge disabled — skip evaluation
+            judge_result = {
+                "scores": {},
+                "model": "disabled",
+                "success": False,
+                "error": "Judge LLM is disabled for this project.",
+            }
+        elif respondent_result["success"] and respondent_result["answer"]:
             judge_result = evaluate_answer(question, respondent_result["answer"], chunks)
         else:
             judge_result = {
@@ -78,7 +141,8 @@ class Evaluator:
                     "text": c["text"][:500],
                     "source": c["source"],
                     "chunk_index": c["chunk_index"],
-                    "distance": round(c["distance"], 4),
+                    "distance": round(c["distance"], 4) if isinstance(c.get("distance"), (int, float)) else None,
+                    "rerank_score": round(c.get("rerank_score"), 4) if isinstance(c.get("rerank_score"), (int, float)) else None,
                 }
                 for c in chunks
             ],

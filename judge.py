@@ -4,7 +4,7 @@ import json
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-JUDGE_MODELS = ["qwen2.5:14b", "qwen2.5:32b", "gemma2:27b", "llama3.1"]
+JUDGE_MODELS = ["qwen2.5:14b", "qwen2.5:32b", "gemma2:27b", "llama3.2:latest", "llama3.1"]
 
 JUDGE_SYSTEM_PROMPT = """You are an expert evaluator for academic research responses in Engineering and Technology. Your task is to evaluate a given answer against source documents and the original question.
 

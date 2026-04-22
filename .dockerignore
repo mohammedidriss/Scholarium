@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# User data (lives in volumes at runtime, don't bake into image)
+projects/
+documents/
+vectordb/
+*.json
+!requirements.txt
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Dev artifacts
+.git/
+.gitignore
+.claude/
+.github/
+*.log
+tmp/

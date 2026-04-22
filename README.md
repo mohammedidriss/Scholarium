@@ -17,7 +17,7 @@ A professional, multi-project research platform for Engineering and Technology d
 - Cancel button to abort long-running queries
 
 ### Dual-LLM Evaluation
-- **Respondent LLM** (`llama3.1` via Ollama) — generates answers from your documents
+- **Respondent LLM** (`qwen2.5:14b` via Ollama) — generates answers from your documents with strong academic reasoning
 - **Judge LLM** (`qwen2.5:14b` via Ollama) — scores every answer on 4 dimensions:
   - Faithfulness (grounded in documents?)
   - Relevance (answers the question?)
@@ -78,10 +78,37 @@ A professional, multi-project research platform for Engineering and Technology d
 | Frontend | Vanilla HTML/CSS/JS (dark theme) |
 | Vector Database | ChromaDB (persistent, per-project) |
 | Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
-| Respondent LLM | Ollama + `llama3.1` (8B) |
+| Respondent LLM | Ollama + `qwen2.5:14b` (14B) |
+| Full-doc context mode | 32K-token window for per-document Q&A (bypasses RAG) |
+| Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, academic-aware) |
+| Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder |
+| Hybrid retrieval | Dense (BGE) + Sparse (BM25), merged and reranked |
 | Judge LLM | Ollama + `qwen2.5:14b` (14B, with fallback chain) |
 | PDF Processing | PyMuPDF (fitz) |
 | PDF/DOCX Export | fpdf2, python-docx |
+
+## Quick Start (macOS — one command)
+
+```bash
+git clone https://github.com/mohammedidriss/Scholarium.git
+cd Scholarium
+chmod +x install.sh start.sh restart.sh
+./install.sh
+./start.sh
+```
+
+That's it. `install.sh` handles everything: Homebrew, Python 3.11, Ollama, LLM models (~14 GB), venv, dependencies, and pre-downloaded embedding models. Then `start.sh` launches the app and opens your browser to http://localhost:8080.
+
+Subsequent usage:
+
+```bash
+./start.sh      # start the app
+./restart.sh    # kill any running instance + start again (use after code changes)
+```
+
+See **Setup** below for the manual step-by-step if you prefer.
+
+---
 
 ## Setup
 
@@ -109,7 +136,7 @@ Keep this running in a separate terminal.
 
 ```bash
 # Required: Respondent model (answers questions)
-ollama pull llama3.1
+ollama pull qwen2.5:14b
 
 # Required: Judge model (evaluates answer quality)
 ollama pull qwen2.5:14b
@@ -121,7 +148,8 @@ ollama pull qwen2.5:14b
 
 | Model | Size | RAM Needed | Quality | Speed |
 |-------|------|-----------|---------|-------|
-| `llama3.1` | 4.9 GB | ~8 GB | Good (respondent) | Fast |
+| `llama3.2:latest` | 2.0 GB | ~4 GB | Good (respondent) | Very fast |
+| `llama3.1` | 4.9 GB | ~8 GB | Stronger respondent / fallback judge | Fast |
 | `qwen2.5:14b` | 9.0 GB | ~12 GB | Strong (judge) | Moderate |
 | `qwen2.5:32b` | 19 GB | ~24 GB | Best (judge) | Slow |
 | `gemma2:27b` | 16 GB | ~20 GB | Good (judge) | Moderate |
@@ -174,7 +202,7 @@ Scholarium/
 ├── app.py                  # Flask server + all API routes (1,482 lines)
 ├── rag_pipeline.py         # RAG: PDF loading, chunking, embedding, ChromaDB retrieval
 ├── evaluator.py            # Orchestrates respondent + judge LLMs (per-project)
-├── respondent.py           # Respondent LLM logic (llama3.1 via Ollama)
+├── respondent.py           # Respondent LLM logic (llama3.2 via Ollama)
 ├── judge.py                # Judge LLM logic (qwen2.5:14b with fallback chain)
 ├── requirements.txt        # Python dependencies
 ├── templates/
@@ -233,6 +261,61 @@ All data routes are scoped under `/api/projects/<project_id>/`:
 - macOS (Apple Silicon recommended)
 - Ollama running locally
 - 8GB RAM minimum (16GB+ recommended for qwen2.5:14b judge model)
+
+## Docker (All-in-One)
+
+Scholarium ships with an all-in-one Docker image that bundles the Flask app, Python dependencies, the embedding model, and Ollama. LLMs are pulled into a Docker volume on first run (~14 GB, one time).
+
+### Build
+
+```bash
+docker build -t scholarium .
+```
+
+### Run
+
+```bash
+docker run -d \
+    --name scholarium \
+    -p 8080:8080 \
+    -v scholarium_data:/app/projects \
+    -v scholarium_ollama:/root/.ollama \
+    scholarium
+```
+
+Open http://localhost:8080 in your browser.
+
+### What the volumes store
+
+| Volume | Contents |
+|---|---|
+| `scholarium_data` | All your projects — documents, notes, Q&A history, summaries, manuscripts, vector DB. Survives container removal. |
+| `scholarium_ollama` | Downloaded LLM models (`llama3.2:latest`, `qwen2.5:14b`). Avoids re-downloading on every rebuild. |
+
+### Override models
+
+```bash
+docker run -d -p 8080:8080 \
+    -e SCHOLARIUM_RESPONDENT=llama3.2 \
+    -e SCHOLARIUM_JUDGE=gemma2:9b \
+    -v scholarium_data:/app/projects \
+    -v scholarium_ollama:/root/.ollama \
+    scholarium
+```
+
+### Stopping and cleanup
+
+```bash
+docker stop scholarium
+docker rm scholarium
+
+# To delete ALL user data (projects + models):
+docker volume rm scholarium_data scholarium_ollama
+```
+
+### Notes for Apple Silicon
+
+The Linux container runs Ollama on CPU — you will not get Apple's Metal GPU acceleration inside the container. For the fastest inference on a Mac, run Ollama natively on the host and build a slimmer image that connects to it via `host.docker.internal:11434`. The current all-in-one image trades some speed for one-command portability.
 
 ## License
 

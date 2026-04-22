@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Research Assistant</title>
+    <title>Scholarium - Research Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
     <!-- Quill rich-text editor -->
     <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
@@ -13,7 +13,7 @@
     <!-- ====== PROJECT SELECTION SCREEN (shown when no project is active) ====== -->
     <div id="projectSelectionScreen" class="project-selection-screen">
         <div class="project-selection-header">
-            <h1>Research Assistant</h1>
+            <h1>Scholarium - Research Assistant</h1>
             <p class="project-selection-subtitle">Engineering &amp; Technology Doctorate Research</p>
             <div class="health-pills project-health" id="healthPillsHome" onclick="toggleHealthDetail()">
                 <span class="health-pill loading">Checking...</span>
@@ -22,10 +22,35 @@
         <div class="project-selection-body">
             <div class="project-selection-title-row">
                 <h2>Your Projects</h2>
-                <button class="sidebar-new-btn" onclick="createProject()">+ New Project</button>
+                <div class="project-selection-actions">
+                    <button class="restart-btn" onclick="restartApp()">Restart Server</button>
+                    <button class="sidebar-new-btn" onclick="createProject()">+ New Project</button>
+                </div>
             </div>
             <div class="project-grid" id="projectGrid">
                 <p class="project-grid-empty">Loading projects...</p>
+            </div>
+        </div>
+
+        <!-- New Project Modal -->
+        <div class="citation-modal" id="newProjectModal" style="display: none;">
+            <div class="citation-modal-content">
+                <div class="citation-modal-header">
+                    <strong>Create New Project</strong>
+                    <button class="doc-summary-close" onclick="closeNewProjectModal()">&#10005;</button>
+                </div>
+                <label class="new-project-label">Project name</label>
+                <input type="text" id="newProjectName" placeholder="e.g. Blockchain in Finance" class="new-project-input">
+                <label class="new-project-label">Description <span class="new-project-label-hint">(optional)</span></label>
+                <textarea id="newProjectDescription" placeholder="What is this research project about? Research questions, scope, goals..." class="new-project-textarea" rows="4"></textarea>
+                <label class="new-project-checkbox">
+                    <input type="checkbox" id="newProjectJudgeEnabled" checked>
+                    <span>Enable Judge LLM (evaluates answer quality — slower but more thorough)</span>
+                </label>
+                <div class="new-project-actions">
+                    <button class="note-back-btn" onclick="closeNewProjectModal()">Cancel</button>
+                    <button class="note-save-btn" onclick="submitNewProject()">Create Project</button>
+                </div>
             </div>
         </div>
     </div>
@@ -44,11 +69,15 @@
                 </div>
             </div>
             <div class="top-bar-right">
+                <label class="judge-toggle" title="Enable or disable the Judge LLM for this project">
+                    <input type="checkbox" id="judgeToggle" onchange="toggleJudge()">
+                    <span class="judge-toggle-slider"></span>
+                    <span class="judge-toggle-label">Judge</span>
+                </label>
                 <label class="upload-btn" id="uploadLabel">
                     Upload PDF
                     <input type="file" id="fileInput" accept=".pdf" multiple hidden>
                 </label>
-                <button class="restart-btn" onclick="restartApp()">Restart</button>
             </div>
         </header>
 
@@ -75,6 +104,11 @@
                 <button class="nav-btn" data-tab="eval" onclick="switchTab('eval')">&#9989; Evaluation</button>
                 <button class="nav-btn" data-tab="journal" onclick="switchTab('journal')">&#128214; Journal</button>
                 <button class="nav-btn" data-tab="manuscript" onclick="switchTab('manuscript')">&#9997; Manuscript</button>
+                <!-- Background activity indicator (auto-shown when jobs running) -->
+                <div class="nav-activity" id="navActivity" style="display: none;" title="Background tasks running">
+                    <span class="spinner activity-spinner"></span>
+                    <span class="nav-activity-text" id="navActivityText">0 running</span>
+                </div>
             </nav>
 
             <!-- Full Content Area -->
@@ -165,6 +199,7 @@
                     <div class="tab-page-header">
                         <h2>Documents</h2>
                         <div class="tab-page-actions">
+                            <button class="doc-action-btn" onclick="recomputeRelevance()" title="Recompute relevance scores against the project description">&#9734; Score Relevance</button>
                             <button class="doc-action-btn" onclick="showDoiDialog()">+ DOI</button>
                             <label class="doc-action-btn" title="Import BibTeX">
                                 + BibTeX
@@ -176,6 +211,12 @@
                     <div class="doc-filter-bar">
                         <select id="statusFilter" onchange="applyDocFilters()"><option value="all">All Status</option><option value="unread">Unread</option><option value="reading">Reading</option><option value="reviewed">Reviewed</option></select>
                         <select id="collectionFilter" onchange="applyDocFilters()"><option value="all">All Collections</option></select>
+                        <select id="sortFilter" onchange="applyDocFilters()">
+                            <option value="name">Sort: Name</option>
+                            <option value="relevance">Sort: Relevance (high→low)</option>
+                            <option value="pages">Sort: Pages</option>
+                            <option value="words">Sort: Word count</option>
+                        </select>
                     </div>
                     <div class="doc-list" id="docList"><p class="docs-empty">Loading...</p></div>
                 </div>

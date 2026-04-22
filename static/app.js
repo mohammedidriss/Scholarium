@@ -1,5 +1,5 @@
 // ============================================================
-// Multi-Project Research Assistant — app.js
+// Scholarium - Research Assistant — app.js
 // ============================================================
 
 // === Global State ===
@@ -75,6 +75,8 @@ function exitProject() {
     currentProjectId = null;
     showProjectScreen();
     loadProjects();
+    // Clear URL hash
+    if (typeof _updateLocationHash === 'function') _updateLocationHash();
 }
 
 // ============================================================
@@ -120,14 +122,42 @@ function renderProjectGrid(projects) {
     projectGrid.innerHTML = html;
 }
 
-async function createProject() {
-    const name = prompt('New project name:');
-    if (!name || !name.trim()) return;
+function createProject() {
+    // Open the new-project modal
+    const modal = document.getElementById('newProjectModal');
+    const nameInput = document.getElementById('newProjectName');
+    const descInput = document.getElementById('newProjectDescription');
+    if (!modal) return;
+    if (nameInput) nameInput.value = '';
+    if (descInput) descInput.value = '';
+    modal.style.display = 'flex';
+    setTimeout(() => nameInput && nameInput.focus(), 50);
+}
+
+function closeNewProjectModal() {
+    const modal = document.getElementById('newProjectModal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function submitNewProject() {
+    const nameInput = document.getElementById('newProjectName');
+    const descInput = document.getElementById('newProjectDescription');
+    const name = (nameInput?.value || '').trim();
+    const description = (descInput?.value || '').trim();
+    if (!name) {
+        if (nameInput) {
+            nameInput.style.borderColor = 'var(--red)';
+            nameInput.focus();
+        }
+        return;
+    }
+    const judgeCb = document.getElementById('newProjectJudgeEnabled');
+    const judge_enabled = judgeCb ? !!judgeCb.checked : true;
     try {
         const resp = await fetch('/api/projects', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name.trim() }),
+            body: JSON.stringify({ name, description, judge_enabled }),
         });
         if (!resp.ok) {
             const err = await resp.json();
@@ -136,6 +166,7 @@ async function createProject() {
         }
         const project = await resp.json();
         allProjects.unshift(project);
+        closeNewProjectModal();
         selectProject(project.id);
         renderProjectGrid(allProjects);
     } catch (err) {
@@ -212,6 +243,13 @@ function selectProject(id) {
     const project = allProjects.find(p => p.id === id);
     if (activeProjectName) activeProjectName.textContent = project ? project.name : 'Project';
 
+    // Initialize the judge toggle for this project
+    const judgeToggle = document.getElementById('judgeToggle');
+    if (judgeToggle) {
+        // judge_enabled defaults to true if the project predates this feature
+        judgeToggle.checked = project ? (project.judge_enabled !== false) : true;
+    }
+
     showWorkspace();
 
     if (chatMessages) chatMessages.innerHTML = '';
@@ -222,6 +260,7 @@ function selectProject(id) {
 
     switchTab('chat');
     reloadProjectData();
+    _updateLocationHash();
 }
 
 function reloadProjectData() {
@@ -233,6 +272,17 @@ function reloadProjectData() {
     checkProjectStatus();
     loadReadingStatuses();
     loadCollections();
+    // If a matrix job is already running on the server, resume polling
+    _resumeMatrixPollerIfRunning();
+}
+
+async function _resumeMatrixPollerIfRunning() {
+    if (!currentProjectId) return;
+    try {
+        const r = await fetch(projectUrl('/matrix/status'));
+        const s = await r.json();
+        if (s.running) _startMatrixPoller();
+    } catch { /* ignore */ }
 }
 
 // ============================================================
@@ -416,7 +466,7 @@ function addAssistantMessage(result) {
     const answerId = answerStore.length;
     answerStore.push(result);
 
-    let html = `<div class="message-label">Research Assistant <span class="model-tag">${escapeHtml(result.respondent_model)}</span></div>`;
+    let html = `<div class="message-label">Scholarium <span class="model-tag">${escapeHtml(result.respondent_model)}</span></div>`;
 
     if (!result.respondent_success) {
         html += `<div class="message-body error-text">${escapeHtml(result.respondent_error || 'Unknown error')}</div>`;
@@ -451,9 +501,60 @@ function addAssistantMessage(result) {
 // Store the current eval result so we can show details on click
 let currentEvalResult = null;
 
+async function toggleJudge() {
+    if (!currentProjectId) return;
+    const toggle = document.getElementById('judgeToggle');
+    if (!toggle) return;
+    const enabled = toggle.checked;
+    try {
+        const resp = await fetch(`/api/projects/${currentProjectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ judge_enabled: enabled }),
+        });
+        if (resp.ok) {
+            const p = await resp.json();
+            // Update local cache
+            const idx = allProjects.findIndex(x => x.id === currentProjectId);
+            if (idx !== -1) allProjects[idx] = p;
+            addSystemMessage(enabled ? 'Judge LLM enabled. Answers will be evaluated.' : 'Judge LLM disabled. Answers will not be scored.');
+            // Refresh eval placeholder text
+            if (evalPlaceholder) {
+                evalPlaceholder.textContent = enabled
+                    ? 'Scores will appear here after each response.'
+                    : 'Judge is disabled for this project. Enable the Judge toggle in the top bar to see evaluation scores.';
+            }
+        } else {
+            // Revert
+            toggle.checked = !enabled;
+            addSystemMessage('Failed to change Judge setting.');
+        }
+    } catch (err) {
+        toggle.checked = !enabled;
+        addSystemMessage('Failed to change Judge setting: ' + err.message);
+    }
+}
+
 function updateEvalPanel(result) {
-    if (!result.scores) return;
+    if (!result) return;
     currentEvalResult = result;
+
+    // Handle disabled/skipped judge
+    const hasScores = result.scores && Object.keys(result.scores).length > 0;
+    if (!hasScores) {
+        if (evalPlaceholder) {
+            evalPlaceholder.style.display = 'block';
+            evalPlaceholder.textContent = result.judge_error
+                ? result.judge_error
+                : 'No scores for this answer. Judge may be disabled.';
+        }
+        if (evalContent) {
+            evalContent.style.display = 'none';
+            evalContent.innerHTML = '';
+        }
+        return;
+    }
+
     if (evalPlaceholder) evalPlaceholder.style.display = 'none';
     if (evalContent) evalContent.style.display = 'block';
 
@@ -631,6 +732,9 @@ function switchTab(tab) {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     const activeBtn = document.querySelector(`.nav-btn[data-tab="${tab}"]`);
     if (activeBtn) activeBtn.classList.add('active');
+
+    // Persist tab in URL so refresh stays put
+    if (typeof _updateLocationHash === 'function') _updateLocationHash();
 
     // Show/hide tab pages
     const tabIds = ['tabChat', 'tabEval', 'tabNotes', 'tabHistory', 'tabSummaries', 'tabDocs', 'tabMatrix', 'tabJournal', 'tabManuscript'];
@@ -1046,6 +1150,9 @@ async function loadDocuments() {
     }
 }
 
+// Bulk selection state
+let _selectedDocs = new Set();
+
 function renderDocList(docs) {
     const list = document.getElementById('docList');
     const filterBar = document.getElementById('docFilterBar');
@@ -1053,11 +1160,29 @@ function renderDocList(docs) {
     if (!docs || docs.length === 0) {
         list.innerHTML = '<p class="docs-empty">No documents uploaded yet.</p>';
         if (filterBar) filterBar.style.display = 'none';
+        _updateBulkBar();
         return;
     }
     if (filterBar) filterBar.style.display = 'flex';
 
-    let html = '';
+    // Prune selected docs that are no longer visible
+    const visibleFilenames = new Set(docs.map(d => d.filename));
+    for (const s of [..._selectedDocs]) {
+        if (!visibleFilenames.has(s)) _selectedDocs.delete(s);
+    }
+
+    // Bulk action toolbar (shown when any selection exists)
+    let html = `<div class="bulk-action-bar" id="bulkActionBar" style="display:${_selectedDocs.size > 0 ? 'flex' : 'none'};">
+        <label class="bulk-select-all">
+            <input type="checkbox" id="bulkSelectAll" onchange="toggleBulkSelectAll(this.checked)">
+            <span id="bulkSelectedCount">${_selectedDocs.size} selected</span>
+        </label>
+        <button class="doc-action-btn doc-summarize-btn" onclick="bulkSummarize()">Summarize selected</button>
+        <button class="doc-action-btn doc-qa-btn" onclick="bulkAskQuestion()">Ask about selected</button>
+        <button class="doc-action-btn doc-delete-btn" onclick="bulkDelete()">Delete selected</button>
+        <button class="doc-action-btn" onclick="clearBulkSelection()">Clear</button>
+    </div>`;
+
     for (const doc of docs) {
         const fn = escapeHtml(doc.filename);
         const enc = encodeURIComponent(doc.filename);
@@ -1073,9 +1198,40 @@ function renderDocList(docs) {
             }
         }
 
-        html += `<div class="doc-card">
+        // Relevance score badge (always shown — either score, scoring spinner, or pending)
+        let relevanceBadge = '';
+        if (typeof doc.relevance_score === 'number') {
+            const score = doc.relevance_score;
+            let cls = 'relevance-low';
+            if (score >= 65) cls = 'relevance-high';
+            else if (score >= 40) cls = 'relevance-med';
+            relevanceBadge = `<span class="doc-relevance-badge ${cls}" title="Relevance to project description and keywords">
+                <span class="doc-relevance-label">Relevance</span>
+                <span class="doc-relevance-value">${Math.round(score)}%</span>
+            </span>`;
+        } else if (doc.relevance_status === 'running') {
+            relevanceBadge = '<span class="doc-relevance-badge relevance-pending" title="Computing relevance score in background..."><span class="spinner activity-spinner" style="margin-right:3px;"></span>Scoring...</span>';
+        } else {
+            relevanceBadge = '<span class="doc-relevance-badge relevance-pending" title="Click Score Relevance to compute">Not scored</span>';
+        }
+
+        // Summary status badge
+        let summaryBadge = '';
+        if (doc.summary_status === 'running') {
+            summaryBadge = '<span class="doc-summary-badge summary-running" title="Summary generating in background"><span class="spinner activity-spinner" style="margin-right:3px;"></span>Summarizing...</span>';
+        } else if (doc.summary_status === 'done') {
+            summaryBadge = '<span class="doc-summary-badge summary-done" title="Summary available — open the Summaries tab">&#10003; Summary</span>';
+        } else {
+            summaryBadge = '<span class="doc-summary-badge summary-none" title="No summary yet">No summary</span>';
+        }
+
+        const selected = _selectedDocs.has(doc.filename);
+        html += `<div class="doc-card ${selected ? 'selected' : ''}">
+            <label class="doc-card-checkbox" onclick="event.stopPropagation()">
+                <input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleDocSelection('${fn}', this.checked)">
+            </label>
             <div class="doc-card-info" onclick="openDocViewer('${fn}')">
-                <div class="doc-card-name">${fn} ${statusBadge}</div>
+                <div class="doc-card-name">${fn} ${statusBadge} ${relevanceBadge} ${summaryBadge}</div>
                 <div class="doc-card-meta">${doc.pages} pages &middot; ${doc.size_display} &middot; ${doc.word_count?.toLocaleString() || '?'} words &middot; ${doc.reading_time || '?'}</div>
                 ${progressBar}
                 <div class="doc-card-collections">${collectionTags}</div>
@@ -1091,11 +1247,109 @@ function renderDocList(docs) {
         </div>`;
     }
     list.innerHTML = html;
+    _updateBulkBar();
 }
+
+function _updateBulkBar() {
+    const bar = document.getElementById('bulkActionBar');
+    const count = document.getElementById('bulkSelectedCount');
+    if (bar) bar.style.display = _selectedDocs.size > 0 ? 'flex' : 'none';
+    if (count) count.textContent = `${_selectedDocs.size} selected`;
+}
+
+function toggleDocSelection(filename, selected) {
+    if (selected) _selectedDocs.add(filename);
+    else _selectedDocs.delete(filename);
+    _updateBulkBar();
+    // Toggle card visual state without re-rendering
+    const card = [...document.querySelectorAll('.doc-card')].find(c => {
+        const cb = c.querySelector('.doc-card-checkbox input');
+        return cb && cb.checked === selected && c.innerHTML.includes(escapeHtml(filename));
+    });
+}
+
+function toggleBulkSelectAll(checked) {
+    if (checked) {
+        for (const d of allDocs) _selectedDocs.add(d.filename);
+    } else {
+        _selectedDocs.clear();
+    }
+    renderDocList(allDocs);
+}
+
+function clearBulkSelection() {
+    _selectedDocs.clear();
+    renderDocList(allDocs);
+}
+
+async function bulkDelete() {
+    const sel = [..._selectedDocs];
+    if (sel.length === 0) return;
+    if (!confirm(`Delete ${sel.length} document${sel.length === 1 ? '' : 's'}? This will remove them and re-index the project.`)) return;
+    addSystemMessage(`Deleting ${sel.length} document(s) and re-indexing (one pass)...`);
+
+    try {
+        const resp = await fetch(projectUrl('/documents/bulk-delete'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filenames: sel }),
+        });
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+            addSystemMessage(`Bulk delete failed (HTTP ${resp.status}). If you just updated the code, please restart the Python server.`);
+            return;
+        }
+        const data = await resp.json();
+        if (!resp.ok) {
+            addSystemMessage('Bulk delete failed: ' + (data.error || resp.statusText));
+            return;
+        }
+        _selectedDocs.clear();
+        addSystemMessage(data.message || `Bulk delete complete.`);
+        loadDocuments();
+        checkProjectStatus();
+    } catch (err) {
+        addSystemMessage('Bulk delete error: ' + err.message);
+    }
+}
+
+async function bulkSummarize() {
+    const sel = [..._selectedDocs];
+    if (sel.length === 0) return;
+    addSystemMessage(`Triggering summarization for ${sel.length} document(s) in background...`);
+    for (const fn of sel) {
+        try {
+            await fetch(projectUrl(`/documents/${encodeURIComponent(fn)}/summarize`), { method: 'POST' });
+        } catch { /* ignore per-file errors */ }
+    }
+    addSystemMessage(`Summarization jobs queued for ${sel.length} document(s). See Summaries tab.`);
+}
+
+function bulkAskQuestion() {
+    const sel = [..._selectedDocs];
+    if (sel.length === 0) return;
+    switchTab('chat');
+    const fileList = sel.map(f => `• ${f}`).join('\n');
+    if (questionInput) {
+        const existing = questionInput.value ? questionInput.value + '\n\n' : '';
+        questionInput.value = `${existing}Considering the following document(s):\n${fileList}\n\n`;
+        questionInput.focus();
+        // Place cursor at end
+        questionInput.selectionStart = questionInput.selectionEnd = questionInput.value.length;
+    }
+    addSystemMessage(`Composing question about ${sel.length} selected document(s). Type your question in the chat input.`);
+}
+
+// Track which tab the user came from before opening the viewer,
+// so closing the viewer returns them there (not forcibly to Chat).
+let _docViewerOriginTab = null;
 
 async function openDocViewer(filename) {
     if (!requireProject()) return;
-    // Switch to chat tab (where the viewer lives)
+    // Remember where the user was
+    const activeNav = document.querySelector('.nav-btn.active');
+    _docViewerOriginTab = activeNav ? activeNav.getAttribute('data-tab') : 'docs';
+    // Switch to chat tab (where the viewer DOM lives)
     switchTab('chat');
     docCurrentFilename = filename;
     docViewerOpen = true;
@@ -1154,10 +1408,18 @@ function closeDocViewer() {
 
     docViewerOpen = false;
     document.getElementById('docViewerPanel').style.display = 'none';
+    // Restore the chat view inside the Chat tab (so it's ready when user visits it later)
     document.getElementById('chatView').style.display = 'block';
     questionInput.placeholder = currentProjectId ? 'Ask a research question...' : 'Select or create a project to get started.';
     docFullText = '';
     docCurrentFilename = '';
+
+    // Return the user to the tab they came from (Docs, by default) — NOT chat
+    const returnTo = _docViewerOriginTab && _docViewerOriginTab !== 'chat'
+        ? _docViewerOriginTab
+        : 'docs';
+    _docViewerOriginTab = null;
+    switchTab(returnTo);
 }
 
 function openDocQA(filename) {
@@ -1510,12 +1772,14 @@ async function createCollection(name) {
 function applyDocFilters() {
     const statusFilter = document.getElementById('statusFilter');
     const collectionFilter = document.getElementById('collectionFilter');
+    const sortFilter = document.getElementById('sortFilter');
     const selectedStatus = statusFilter ? statusFilter.value : '';
     const selectedCollection = collectionFilter ? collectionFilter.value : '';
+    const sortBy = sortFilter ? sortFilter.value : 'name';
 
     let filtered = allDocs;
 
-    if (selectedStatus) {
+    if (selectedStatus && selectedStatus !== 'all') {
         filtered = filtered.filter(doc => {
             const statusData = allReadingStatuses[doc.filename];
             const docStatus = statusData ? statusData.status : 'unread';
@@ -1523,14 +1787,57 @@ function applyDocFilters() {
         });
     }
 
-    if (selectedCollection) {
+    if (selectedCollection && selectedCollection !== 'all') {
         const col = allCollections.find(c => c.id === selectedCollection);
         if (col && col.documents) {
             filtered = filtered.filter(doc => col.documents.includes(doc.filename));
         }
     }
 
+    // Sort
+    filtered = [...filtered];
+    if (sortBy === 'relevance') {
+        filtered.sort((a, b) => (b.relevance_score ?? -1) - (a.relevance_score ?? -1));
+    } else if (sortBy === 'pages') {
+        filtered.sort((a, b) => (b.pages || 0) - (a.pages || 0));
+    } else if (sortBy === 'words') {
+        filtered.sort((a, b) => (b.word_count || 0) - (a.word_count || 0));
+    } else {
+        filtered.sort((a, b) => (a.filename || '').localeCompare(b.filename || ''));
+    }
+
     renderDocList(filtered);
+}
+
+async function recomputeRelevance() {
+    if (!requireProject()) return;
+    addSystemMessage('Computing relevance scores in background...');
+    try {
+        const r = await fetch(projectUrl('/relevance/recompute'), { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok && data.error) {
+            addSystemMessage('Failed: ' + data.error);
+            return;
+        }
+        // Poll periodically and refresh the doc list when done
+        const pid = currentProjectId;
+        const start = Date.now();
+        const iv = setInterval(async () => {
+            if (currentProjectId !== pid) { clearInterval(iv); return; }
+            const jobs = await _safeJsonFetch(`/api/projects/${pid}/jobs?running=true`, []);
+            const relevanceRunning = jobs.some(j => j.type === 'relevance');
+            if (!relevanceRunning) {
+                clearInterval(iv);
+                addSystemMessage('Relevance scoring complete.');
+                loadDocuments();
+            } else if (Date.now() - start > 300000) {
+                clearInterval(iv);
+                addSystemMessage('Relevance scoring is taking longer than expected.');
+            }
+        }, 3000);
+    } catch (err) {
+        addSystemMessage('Failed: ' + err.message);
+    }
 }
 
 // ============================================================
@@ -1572,16 +1879,50 @@ function renderSummaries(summaries, docs) {
     list.innerHTML = html;
 }
 
+// Poll once for a specific summary. Returns the summary object or null.
+async function _fetchSummary(pid, filename) {
+    try {
+        const r = await fetch(`/api/projects/${pid}/summaries`);
+        const all = await r.json();
+        return all[filename] || null;
+    } catch { return null; }
+}
+
+// Wait for a summary to appear, up to `maxTries` attempts (poll every 3s).
+async function _waitForSummary(pid, filename, onProgress, maxTries = 120) {
+    for (let i = 0; i < maxTries; i++) {
+        const s = await _fetchSummary(pid, filename);
+        if (s) return s;
+        if (onProgress) onProgress(i);
+        await new Promise(r => setTimeout(r, 3000));
+    }
+    return null;
+}
+
 async function summarizeDocument(filename) {
     if (!requireProject()) return;
-    addSystemMessage(`Generating summary for ${filename}...`);
-    switchTab('summaries');
+    addSystemMessage(`Generating summary for ${filename} in the background...`);
     try {
         const resp = await fetch(projectUrl(`/documents/${encodeURIComponent(filename)}/summarize`), { method: 'POST' });
         const data = await resp.json();
-        if (data.error) addSystemMessage(`Summary failed: ${data.error}`);
-        else addSystemMessage(`Summary generated for ${filename}`);
-        loadSummaries();
+        if (resp.ok && data.cached) {
+            addSystemMessage(`Summary already exists for ${filename}.`);
+            loadSummaries();
+            return;
+        }
+        // 202 — job started; poll in background for completion
+        const pid = currentProjectId;
+        loadSummaries(); // show current state with "generating" marker
+        _waitForSummary(pid, filename, () => {
+            // Optional: could update a progress tick
+        }).then(result => {
+            if (result) {
+                addSystemMessage(`Summary ready: ${filename}`);
+                if (currentProjectId === pid) loadSummaries();
+            } else {
+                addSystemMessage(`Summary timed out for ${filename}.`);
+            }
+        });
     } catch (err) {
         addSystemMessage('Summarization failed: ' + err.message);
     }
@@ -1589,12 +1930,27 @@ async function summarizeDocument(filename) {
 
 async function regenerateSummary(filename) {
     if (!requireProject()) return;
-    addSystemMessage(`Regenerating summary for ${filename}...`);
+    addSystemMessage(`Regenerating summary for ${filename} in the background...`);
     try {
         await fetch(projectUrl(`/documents/${encodeURIComponent(filename)}/summarize?force=true`), { method: 'POST' });
-        addSystemMessage(`Summary regenerated for ${filename}`);
-        loadSummaries();
-    } catch { /* ignore */ }
+        const pid = currentProjectId;
+        // Invalidate cached entry by not returning it; poll for the new generated_at
+        const before = await _fetchSummary(pid, filename);
+        const beforeAt = before ? before.generated_at : null;
+        const maxTries = 120;
+        for (let i = 0; i < maxTries; i++) {
+            await new Promise(r => setTimeout(r, 3000));
+            const s = await _fetchSummary(pid, filename);
+            if (s && s.generated_at !== beforeAt) {
+                addSystemMessage(`Summary regenerated for ${filename}`);
+                if (currentProjectId === pid) loadSummaries();
+                return;
+            }
+        }
+        addSystemMessage(`Regeneration timed out for ${filename}.`);
+    } catch (err) {
+        addSystemMessage('Regeneration failed: ' + err.message);
+    }
 }
 
 async function summarizeCurrentDoc() {
@@ -1609,22 +1965,37 @@ async function summarizeCurrentDoc() {
     }
 
     panel.style.display = 'flex';
-    body.innerHTML = '<div class="spinner"></div> Generating summary...';
+    body.innerHTML = '<div class="spinner"></div> Summarizing in background... (you can keep working)';
     btn.textContent = 'Summarizing...';
     btn.disabled = true;
 
+    const filename = docCurrentFilename;
+    const pid = currentProjectId;
+
     try {
-        const resp = await fetch(projectUrl(`/documents/${encodeURIComponent(docCurrentFilename)}/summarize`), { method: 'POST' });
+        const resp = await fetch(projectUrl(`/documents/${encodeURIComponent(filename)}/summarize`), { method: 'POST' });
         const data = await resp.json();
-        if (data.error) {
-            body.innerHTML = `<p style="color:var(--red)">${escapeHtml(data.error)}</p>`;
-            btn.textContent = 'Summarize';
-        } else {
+        if (resp.ok && data.cached) {
             showSummaryPanel(data);
+            btn.disabled = false;
+            return;
+        }
+        // 202 — poll until the summary appears
+        const result = await _waitForSummary(pid, filename);
+        // Only update UI if user is still on the same document
+        if (docCurrentFilename === filename && currentProjectId === pid) {
+            if (result) {
+                showSummaryPanel(result);
+            } else {
+                body.innerHTML = '<p style="color:var(--red)">Summary timed out.</p>';
+                btn.textContent = 'Summarize';
+            }
         }
     } catch (err) {
-        body.innerHTML = `<p style="color:var(--red)">Failed: ${escapeHtml(err.message)}</p>`;
-        btn.textContent = 'Summarize';
+        if (docCurrentFilename === filename) {
+            body.innerHTML = `<p style="color:var(--red)">Failed: ${escapeHtml(err.message)}</p>`;
+            btn.textContent = 'Summarize';
+        }
     }
     btn.disabled = false;
 }
@@ -1671,58 +2042,149 @@ async function regenerateCurrentSummary() {
 // 18. Literature Matrix
 // ============================================================
 
+// Global poller that keeps ticking even when the user leaves the Matrix tab.
+// Keyed by project id so switching projects correctly stops the old poller.
+let _matrixPollTimer = null;
+let _matrixPollProject = null;
+
+async function _safeJsonFetch(path, fallback) {
+    try {
+        const r = await fetch(path);
+        const ct = r.headers.get('content-type') || '';
+        if (!r.ok || !ct.includes('application/json')) return fallback;
+        return await r.json();
+    } catch { return fallback; }
+}
+
 async function loadMatrix() {
     if (!currentProjectId) return;
     const container = document.getElementById('matrixContainer');
     if (!container) return;
     container.innerHTML = '<div class="spinner"></div> Loading literature matrix...';
-    try {
-        const resp = await fetch(projectUrl('/matrix'));
-        const data = await resp.json();
-        if (data.entries && data.entries.length > 0) {
-            renderMatrixTable(data.entries);
-        } else {
-            container.innerHTML = `<div class="matrix-empty">
-                <p>No literature matrix generated yet.</p>
-                <button class="doc-action-btn" onclick="generateMatrix()">Generate Matrix</button>
-            </div>`;
-        }
-    } catch (err) {
-        container.innerHTML = `<div class="matrix-empty">
-            <p>Failed to load matrix: ${escapeHtml(err.message)}</p>
-            <button class="doc-action-btn" onclick="generateMatrix()">Generate Matrix</button>
-        </div>`;
-    }
+
+    // Load entries AND current job status in parallel (with graceful fallbacks)
+    const data = await _safeJsonFetch(projectUrl('/matrix'), { entries: [] });
+    const status = await _safeJsonFetch(projectUrl('/matrix/status'), { running: false, total: 0, done: 0 });
+
+    _renderMatrixView(data.entries || [], status);
+
+    // If a job is still running on the server, make sure the background poller is active
+    if (status.running) _startMatrixPoller();
 }
 
 async function generateMatrix() {
     if (!requireProject()) return;
     const container = document.getElementById('matrixContainer');
     if (!container) return;
-    container.innerHTML = '<div class="spinner"></div> Generating literature matrix... This may take a moment.';
+
+    // Show an optimistic "starting..." state
+    container.innerHTML = '<div class="spinner"></div> Starting matrix generation...';
+
     try {
         const resp = await fetch(projectUrl('/matrix/generate'), { method: 'POST' });
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+            container.innerHTML = `<p style="color:var(--red)">Server error (status ${resp.status}). If you just updated the code, please restart the Python server.</p>
+                <button class="doc-action-btn" onclick="generateMatrix()">Retry</button>`;
+            return;
+        }
         const data = await resp.json();
-        if (data.error) {
+
+        if (resp.status === 202 || data.status) {
+            addSystemMessage(data.message || 'Matrix generation started in background.');
+            _startMatrixPoller();
+            await loadMatrix();
+        } else if (data.error) {
             container.innerHTML = `<p style="color:var(--red)">${escapeHtml(data.error)}</p>
                 <button class="doc-action-btn" onclick="generateMatrix()">Retry</button>`;
-        } else if (data.entries && data.entries.length > 0) {
-            renderMatrixTable(data.entries);
         } else {
-            container.innerHTML = '<p>No entries generated. Upload documents first.</p>';
+            await loadMatrix();
         }
     } catch (err) {
-        container.innerHTML = `<p style="color:var(--red)">Generation failed: ${escapeHtml(err.message)}</p>
+        container.innerHTML = `<p style="color:var(--red)">Failed to start: ${escapeHtml(err.message)}</p>
             <button class="doc-action-btn" onclick="generateMatrix()">Retry</button>`;
     }
 }
 
-function renderMatrixTable(entries) {
+function _startMatrixPoller() {
+    // If a poller is already running for this project, do nothing
+    if (_matrixPollTimer && _matrixPollProject === currentProjectId) return;
+    // Otherwise stop any existing poller
+    if (_matrixPollTimer) clearInterval(_matrixPollTimer);
+
+    _matrixPollProject = currentProjectId;
+    const pid = currentProjectId;
+
+    _matrixPollTimer = setInterval(async () => {
+        // If the user switched project, stop polling
+        if (currentProjectId !== pid) {
+            clearInterval(_matrixPollTimer);
+            _matrixPollTimer = null;
+            _matrixPollProject = null;
+            return;
+        }
+        const status = await _safeJsonFetch(`/api/projects/${pid}/matrix/status`, { running: false });
+
+        const matrixTabOpen = document.getElementById('tabMatrix') &&
+                              document.getElementById('tabMatrix').style.display !== 'none';
+
+        if (matrixTabOpen) {
+            const data = await _safeJsonFetch(`/api/projects/${pid}/matrix`, { entries: [] });
+            _renderMatrixView(data.entries || [], status);
+        }
+
+        if (!status.running) {
+            clearInterval(_matrixPollTimer);
+            _matrixPollTimer = null;
+            _matrixPollProject = null;
+            const errCount = (status.errors || []).length;
+            if (status.total > 0) {
+                addSystemMessage(`Matrix generation complete: ${status.done}/${status.total} processed${errCount ? `, ${errCount} errors` : ''}.`);
+            }
+        }
+    }, 3000);
+}
+
+function _renderMatrixView(entries, status) {
     const container = document.getElementById('matrixContainer');
     if (!container) return;
 
-    let html = `<div class="matrix-toolbar">
-        <button class="doc-action-btn" onclick="generateMatrix()">Regenerate</button>
+    // Progress banner (if a job is running)
+    let banner = '';
+    if (status && status.running) {
+        const pct = status.total > 0 ? Math.round((status.done / status.total) * 100) : 0;
+        const current = status.current ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px;">${escapeHtml(status.current)}</span>` : '';
+        banner = `<div class="matrix-progress">
+            <div class="matrix-progress-header">
+                <span>Generating in background — ${status.done}/${status.total} (${pct}%)</span>
+                ${current}
+            </div>
+            <div class="matrix-progress-bar"><div class="matrix-progress-fill" style="width:${pct}%"></div></div>
+        </div>`;
+    }
+
+    if (!entries || entries.length === 0) {
+        container.innerHTML = banner + `<div class="matrix-empty">
+            <p>No literature matrix generated yet.</p>
+            ${status && status.running ? '' : '<button class="doc-action-btn" onclick="generateMatrix()">Generate Matrix</button>'}
+        </div>`;
+        return;
+    }
+
+    renderMatrixTable(entries, banner, status && status.running);
+}
+
+function renderMatrixTable(entries, banner = '', running = false) {
+    const container = document.getElementById('matrixContainer');
+    if (!container) return;
+
+    const regenBtn = running
+        ? `<button class="doc-action-btn" disabled>Generating...</button>`
+        : `<button class="doc-action-btn" onclick="generateMatrix()">Regenerate / Process New Docs</button>`;
+
+    let html = `${banner}<div class="matrix-toolbar">
+        ${regenBtn}
+        <span style="font-size:11px;color:var(--text-muted);">${entries.length} entries</span>
     </div>
     <div class="matrix-table-wrapper">
     <table class="matrix-table">
@@ -1733,17 +2195,25 @@ function renderMatrixTable(entries) {
                 <th>Methodology</th>
                 <th>Findings</th>
                 <th>Sample Size</th>
+                <th>Relevance</th>
             </tr>
         </thead>
         <tbody>`;
 
     for (const entry of entries) {
+        const score = entry.relevance_score;
+        let relCell = '<span style="color:var(--text-muted);font-size:10px;">—</span>';
+        if (typeof score === 'number') {
+            const cls = score >= 65 ? 'relevance-high' : score >= 40 ? 'relevance-med' : 'relevance-low';
+            relCell = `<span class="doc-relevance-badge ${cls}" style="padding:2px 7px;">${Math.round(score)}%</span>`;
+        }
         html += `<tr>
             <td>${escapeHtml(entry.title || '')}</td>
             <td>${escapeHtml(String(entry.year || ''))}</td>
             <td>${escapeHtml(entry.methodology || '')}</td>
             <td>${escapeHtml(entry.findings || '')}</td>
             <td>${escapeHtml(String(entry.sample_size || ''))}</td>
+            <td>${relCell}</td>
         </tr>`;
     }
 
@@ -2577,8 +3047,100 @@ async function fetchDoi() {
     }
 }
 
-// Start on project selection screen
-showProjectScreen();
-loadProjects();
+// === URL-hash-based navigation (so refresh stays on the current project/tab) ===
+// Hash format:  #project/<pid>/<tab>   or   # (home)
+let _suppressHashUpdate = false;
+
+function _updateLocationHash() {
+    if (_suppressHashUpdate) return;
+    if (!currentProjectId) {
+        if (location.hash && location.hash !== '#') history.replaceState(null, '', '#');
+        return;
+    }
+    const activeBtn = document.querySelector('.nav-btn.active');
+    const tab = activeBtn ? activeBtn.getAttribute('data-tab') : 'chat';
+    const newHash = `#project/${currentProjectId}/${tab || 'chat'}`;
+    if (location.hash !== newHash) history.replaceState(null, '', newHash);
+}
+
+function _parseLocationHash() {
+    const m = (location.hash || '').match(/^#project\/([a-zA-Z0-9_-]+)(?:\/(\w+))?/);
+    if (!m) return null;
+    return { pid: m[1], tab: m[2] || 'chat' };
+}
+
+async function _initFromHash() {
+    showProjectScreen();
+    await loadProjects();
+    const parsed = _parseLocationHash();
+    if (parsed && allProjects.find(p => p.id === parsed.pid)) {
+        _suppressHashUpdate = true;
+        try {
+            selectProject(parsed.pid);
+            // Wait for selectProject's async render then switch tab
+            setTimeout(() => {
+                if (parsed.tab) switchTab(parsed.tab);
+                _suppressHashUpdate = false;
+                _updateLocationHash();
+            }, 50);
+        } catch {
+            _suppressHashUpdate = false;
+        }
+    }
+}
+
+// Handle back/forward navigation via browser buttons
+window.addEventListener('hashchange', () => {
+    const parsed = _parseLocationHash();
+    if (!parsed) {
+        // Home hash → project selection
+        if (currentProjectId) exitProject();
+    } else if (parsed.pid !== currentProjectId) {
+        selectProject(parsed.pid);
+        setTimeout(() => switchTab(parsed.tab || 'chat'), 50);
+    }
+});
+
+// Start with hash-aware init
+_initFromHash();
 checkHealth();
 setInterval(checkHealth, 30000);
+
+// Global background-jobs poller — shows activity indicator while any job runs
+let _lastJobsRunning = 0;
+async function pollBackgroundJobs() {
+    if (!currentProjectId) {
+        const el = document.getElementById('navActivity');
+        if (el) el.style.display = 'none';
+        _lastJobsRunning = 0;
+        return;
+    }
+    try {
+        const r = await fetch(projectUrl('/jobs?running=true'));
+        if (!r.ok) return;
+        const jobs = await r.json();
+        const el = document.getElementById('navActivity');
+        const txt = document.getElementById('navActivityText');
+        if (!el || !txt) return;
+        if (jobs.length > 0) {
+            el.style.display = 'flex';
+            const typeCounts = {};
+            for (const j of jobs) typeCounts[j.type] = (typeCounts[j.type] || 0) + 1;
+            const parts = Object.entries(typeCounts).map(([t, c]) => `${c} ${t}`);
+            txt.textContent = parts.join(', ');
+            el.title = 'Running: ' + jobs.map(j => `${j.type} → ${j.target}`).join('\n');
+        } else {
+            el.style.display = 'none';
+        }
+
+        // If the docs tab is visible and the number of running jobs changed,
+        // refresh the document list so summary badges update.
+        const docsOpen = document.getElementById('tabDocs') &&
+                         document.getElementById('tabDocs').style.display !== 'none';
+        if (docsOpen && jobs.length !== _lastJobsRunning) {
+            loadDocuments();
+        }
+        _lastJobsRunning = jobs.length;
+    } catch { /* ignore */ }
+}
+setInterval(pollBackgroundJobs, 4000);
